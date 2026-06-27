@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package greentoken;
+
+option go_package = "greentoken/pb;pb";
+
+service GreenTokenCollector {
+  rpc StreamEnergy(stream EnergyEvent) returns (stream Ack);
+}
+
+message EnergyEvent {
+  int64  timestamp_ns       = 1;
+  string agent_id           = 2;
+  string hostname           = 3;
+  int32  pid                = 4;
+  string workload           = 5;   // ex: "vllm", "llama.cpp", "ollama"
+  string model              = 6;   // ex: "llama3-70b"
+
+  // Energia na janela de medição
+  double watts_cpu          = 7;
+  double watts_dram         = 8;
+  double watts_gpu          = 9;
+  int32  gpu_index          = 10;  // -1 se sem GPU
+
+  // Throughput na mesma janela
+  int64  tokens_in_window   = 11;
+  double window_seconds     = 12;
+
+  // Utilização (para contexto, não para atuar)
+  double cpu_util_pct       = 13;
+  double gpu_util_pct       = 14;
+  uint64 gpu_mem_used       = 15;
+}
+
+message Ack {
+  bool   ok                 = 1;
+  string message            = 2;
+}

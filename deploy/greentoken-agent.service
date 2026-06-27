@@ -1,0 +1,14 @@
+[Unit]
+Description=GreenToken Agent - AI Energy FinOps Observability Agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=-/etc/greentoken/agent.env
+ExecStart=/usr/local/bin/greentoken-agent
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

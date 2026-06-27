@@ -1,0 +1,40 @@
+# Binaries and executable files
+bin/
+greentoken-agent
+greentoken-collector
+greentoken
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+*.out
+*.prof
+
+# eBPF / bpf2go generated files
+# O cilium/ebpf gera arquivos que terminam com _bpfel.go, _bpfeb.go, _bpfel.o, _bpfeb.o
+# Também ignoramos qualquer outro arquivo .o gerado na compilação do BPF
+*.o
+*_bpfel.go
+*_bpfeb.go
+*_bpfel.o
+*_bpfeb.o
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Temporary and IDE folders
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Go workspace state
+go.work.sum

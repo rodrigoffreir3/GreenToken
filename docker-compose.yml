@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  greentoken-collector:
+    build:
+      context: .
+      dockerfile: collector/Dockerfile
+    container_name: greentoken_collector
+    restart: always
+    ports:
+      - "50051:50051"
+      - "2112:2112"
+    environment:
+      - GT_GRPC_PORT=50051
+      - GT_METRICS_PORT=2112
+      - GT_KWH_PRICE=0.75
+    networks:
+      - gt-net
+
+  greentoken-agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    container_name: greentoken_agent
+    restart: always
+    privileged: true
+    pid: host
+    cgroup: host
+    depends_on:
+      - greentoken-collector
+    environment:
+      - GT_COLLECTOR_URL=greentoken_collector:50051
+      - GT_AGENT_ID=docker-agent-01
+      - GT_WORKLOAD_NAME=vllm
+      - GT_MODEL_NAME=llama3-70b
+      - GT_CPU_COUNT=4
+    volumes:
+      - /sys/class/powercap:/sys/class/powercap:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - /sys/kernel/debug:/sys/kernel/debug:ro
+    networks:
+      - gt-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: greentoken_prometheus
+    restart: always
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - gt-net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: greentoken_grafana
+    restart: always
+    volumes:
+      - ./deploy/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./deploy/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./dashboard/grafana/greentoken.json:/var/lib/grafana/dashboards/greentoken.json:ro
+    ports:
+      - "3000:3000"
+    networks:
+      - gt-net
+
+networks:
+  gt-net:
+    driver: bridge
