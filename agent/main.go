@@ -26,7 +26,8 @@ import (
 var (
 	collectorURL = flag.String("collector", "localhost:50051", "Endereço do collector gRPC (host:port)")
 	agentID      = flag.String("id", "agent-default", "Identificador único deste agente")
-	workloadName = flag.String("workload", "vllm", "Nome do processo do workload alvo (ex: vllm, python3, ollama)")
+	workloadName = flag.String("workload", "vllm", "Nome lógico do workload alvo (ex: vllm)")
+	targetPID    = flag.Int("pid", 0, "PID exato do processo alvo (Obrigatório para matching preciso, não usa mais comm)")
 	modelName    = flag.String("model", "llama3", "Nome do modelo de IA (ex: llama3-8b)")
 	logFilePath  = flag.String("log-file", "", "Caminho do arquivo de log da engine de inferência para sniffar tokens")
 	windowSecs   = flag.Int("interval", 2, "Janela de medição em segundos")
@@ -58,6 +59,11 @@ func main() {
 	}
 	if env := os.Getenv("GT_WORKLOAD_NAME"); env != "" {
 		*workloadName = env
+	}
+	if env := os.Getenv("GT_TARGET_PID"); env != "" {
+		if pid, err := strconv.Atoi(env); err == nil {
+			*targetPID = pid
+		}
 	}
 	if env := os.Getenv("GT_MODEL_NAME"); env != "" {
 		*modelName = env
@@ -235,46 +241,26 @@ func collectAndEnqueue(hostname string, rb *RingBuffer) {
 	// Lê total de tokens gerados na janela
 	tokensInWindow := atomic.SwapInt64(&accumulatedTokens, 0)
 
-	// 4. Identifica processos que coincidem com o workload selecionado
+	// 4. Identifica processos que coincidem com o PID selecionado
 	now := time.Now().UnixNano()
-	targetPID, errPID := strconv.Atoi(*workloadName)
-	activeTargetPIDs := make(map[uint32]bool)
-
-	if errPID == nil {
-		activeTargetPIDs[uint32(targetPID)] = true
-	} else {
-		targetLower := strings.ToLower(*workloadName)
-		entries, err := os.ReadDir("/proc")
-		if err == nil {
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
-				}
-				p, errP := strconv.Atoi(entry.Name())
-				if errP != nil {
-					continue
-				}
-				cmdline, errC := os.ReadFile("/proc/" + entry.Name() + "/cmdline")
-				if errC == nil {
-					cmdStr := strings.ToLower(strings.ReplaceAll(string(cmdline), "\x00", " "))
-					if strings.Contains(cmdStr, targetLower) {
-						activeTargetPIDs[uint32(p)] = true
-					}
-				}
-			}
-		}
-	}
 
 	var matchedPIDs []uint32
 	var matchedTotalCPUNs uint64
 	for pid, stat := range snapMap {
-		isMatch := activeTargetPIDs[pid]
+		isMatch := false
 
-		// Heurística de robustez: se há GPU e detectamos que o processo está na GPU
-		// podemos assumir que ele faz parte do workload alvo, se nenhuma outra checagem for melhor.
-		if !isMatch && errPID != nil && gpuDevCount > 0 && len(gpuMap) > 0 {
-			if stat.gpuIdx >= 0 {
+		if *targetPID > 0 {
+			// 1. Se passou um PID, faz match EXATO e estrito
+			if pid == uint32(*targetPID) {
 				isMatch = true
+			}
+		} else {
+			// 2. Se não passou PID (targetPID=0), fallback heurístico:
+			// Assumimos que qualquer processo ativamente executando na GPU é nosso alvo LLM.
+			if gpuDevCount > 0 && len(gpuMap) > 0 {
+				if stat.gpuIdx >= 0 {
+					isMatch = true
+				}
 			}
 		}
 
