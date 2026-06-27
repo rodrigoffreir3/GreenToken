@@ -3,6 +3,7 @@ bin/
 /greentoken-agent
 /greentoken-collector
 /greentoken
+/cmd/greentoken/greentoken
 *.exe
 *.exe~
 *.dll

@@ -237,25 +237,43 @@ func collectAndEnqueue(hostname string, rb *RingBuffer) {
 
 	// 4. Identifica processos que coincidem com o workload selecionado
 	now := time.Now().UnixNano()
-	targetLower := strings.ToLower(*workloadName)
 	targetPID, errPID := strconv.Atoi(*workloadName)
+	activeTargetPIDs := make(map[uint32]bool)
+
+	if errPID == nil {
+		activeTargetPIDs[uint32(targetPID)] = true
+	} else {
+		targetLower := strings.ToLower(*workloadName)
+		entries, err := os.ReadDir("/proc")
+		if err == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				p, errP := strconv.Atoi(entry.Name())
+				if errP != nil {
+					continue
+				}
+				cmdline, errC := os.ReadFile("/proc/" + entry.Name() + "/cmdline")
+				if errC == nil {
+					cmdStr := strings.ToLower(strings.ReplaceAll(string(cmdline), "\x00", " "))
+					if strings.Contains(cmdStr, targetLower) {
+						activeTargetPIDs[uint32(p)] = true
+					}
+				}
+			}
+		}
+	}
 
 	var matchedPIDs []uint32
 	var matchedTotalCPUNs uint64
 	for pid, stat := range snapMap {
-		isMatch := false
+		isMatch := activeTargetPIDs[pid]
 
-		// 1. Tenta match exato por PID, se o workload passado for um número
-		if errPID == nil && uint32(targetPID) == pid {
-			isMatch = true
-		} else if strings.Contains(strings.ToLower(stat.comm), targetLower) || strings.Contains(strings.ToLower(*workloadName), strings.ToLower(stat.comm)) {
-			// 2. Se for match por nome, heurística de robustez:
-			// Se detectamos placa de vídeo e processos na GPU, o processo deve estar na GPU para ser considerado o worker principal.
-			if gpuDevCount > 0 && len(gpuMap) > 0 {
-				if stat.gpuIdx >= 0 {
-					isMatch = true
-				}
-			} else {
+		// Heurística de robustez: se há GPU e detectamos que o processo está na GPU
+		// podemos assumir que ele faz parte do workload alvo, se nenhuma outra checagem for melhor.
+		if !isMatch && errPID != nil && gpuDevCount > 0 && len(gpuMap) > 0 {
+			if stat.gpuIdx >= 0 {
 				isMatch = true
 			}
 		}
