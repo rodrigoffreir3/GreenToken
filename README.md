@@ -90,6 +90,16 @@ GT-00 spike ran on Kaggle Tesla T4, Qwen2.5-0.5B-Instruct-Q4, 3 runs × 20 reque
 
 ---
 
+## Current Limitations (GT-01)
+
+Transparency is a core engineering principle for GreenToken. The v1.0 architecture currently operates under these limitations:
+
+1. **Token Allocation is a Heuristic:** In multi-process environments matching the same workload name, tokens sniffed from logs are *distributed proportionally* based on CPU time (`cpuNs`). While this maintains atomicity for the workload as a whole, it assumes "more CPU time = more tokens", which is an approximation (especially if two different models run simultaneously on the same host).
+2. **Log Parser Validation:** The 0% error rate for token counting was validated on the GT-00 spike using native API responses (`completion_tokens`). The regex-based log sniffer is a fallback and has not yet been stress-tested against the native API numbers in production.
+3. **PID Matching Fragility:** By default, if `--workload` is a name, GreenToken matches by process name (`comm`), which could catch unrelated processes (e.g., matching all `python` processes). **Fix:** You can now pass an exact PID (e.g., `--workload 12345`) to bypass string matching, or rely on GreenToken's NVML heuristic (it will only match `comm` if the process is actually mapped to a GPU, avoiding idle background processes).
+
+---
+
 ## Supported inference engines (token counting)
 
 - `vllm` — native `/metrics` Prometheus endpoint

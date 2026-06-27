@@ -238,11 +238,29 @@ func collectAndEnqueue(hostname string, rb *RingBuffer) {
 	// 4. Identifica processos que coincidem com o workload selecionado
 	now := time.Now().UnixNano()
 	targetLower := strings.ToLower(*workloadName)
+	targetPID, errPID := strconv.Atoi(*workloadName)
 
 	var matchedPIDs []uint32
 	var matchedTotalCPUNs uint64
 	for pid, stat := range snapMap {
-		if strings.Contains(strings.ToLower(stat.comm), targetLower) || strings.Contains(strings.ToLower(*workloadName), strings.ToLower(stat.comm)) {
+		isMatch := false
+
+		// 1. Tenta match exato por PID, se o workload passado for um número
+		if errPID == nil && uint32(targetPID) == pid {
+			isMatch = true
+		} else if strings.Contains(strings.ToLower(stat.comm), targetLower) || strings.Contains(strings.ToLower(*workloadName), strings.ToLower(stat.comm)) {
+			// 2. Se for match por nome, heurística de robustez:
+			// Se detectamos placa de vídeo e processos na GPU, o processo deve estar na GPU para ser considerado o worker principal.
+			if gpuDevCount > 0 && len(gpuMap) > 0 {
+				if stat.gpuIdx >= 0 {
+					isMatch = true
+				}
+			} else {
+				isMatch = true
+			}
+		}
+
+		if isMatch {
 			matchedPIDs = append(matchedPIDs, pid)
 			matchedTotalCPUNs += stat.cpuNs
 		}
