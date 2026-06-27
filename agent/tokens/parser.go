@@ -7,13 +7,13 @@ import (
 
 var regexes = []*regexp.Regexp{
 	// Padrão geral / vLLM: "generated 45 tokens"
-	regexp.MustCompile(`(?i)generated\s+(\d+)\s+tokens`),
+	regexp.MustCompile(`(?i)\bgenerated\s+(\d+)\s+tokens\b`),
 	// Padrão Ollama / vLLM: "eval count = 120"
-	regexp.MustCompile(`(?i)eval\s+count\s*=\s*(\d+)`),
+	regexp.MustCompile(`(?i)\beval\s+count\s*=\s*(\d+)\b`),
 	// Padrão llama.cpp: "eval tokens = 80"
-	regexp.MustCompile(`(?i)eval\s+tokens\s*=\s*(\d+)`),
-	// Padrão genérico de sumário: "tokens: 256"
-	regexp.MustCompile(`(?i)tokens\s*:\s*(\d+)`),
+	regexp.MustCompile(`(?i)\beval\s+tokens\s*=\s*(\d+)\b`),
+	// Padrão genérico de sumário: "tokens: 256" (evitar metadados como max_tokens)
+	regexp.MustCompile(`(?i)(?:^|\s)tokens\s*:\s*(\d+)\b`),
 }
 
 // CountTokens analisa uma linha de log para extrair a contagem de tokens gerados.

@@ -235,65 +235,88 @@ func collectAndEnqueue(hostname string, rb *RingBuffer) {
 	// Lê total de tokens gerados na janela
 	tokensInWindow := atomic.SwapInt64(&accumulatedTokens, 0)
 
-	// 4. Constrói eventos de energia para processos que coincidem com o workload selecionado
+	// 4. Identifica processos que coincidem com o workload selecionado
 	now := time.Now().UnixNano()
 	targetLower := strings.ToLower(*workloadName)
 
+	var matchedPIDs []uint32
+	var matchedTotalCPUNs uint64
 	for pid, stat := range snapMap {
 		if strings.Contains(strings.ToLower(stat.comm), targetLower) || strings.Contains(strings.ToLower(*workloadName), strings.ToLower(stat.comm)) {
-			// Atribuição de energia proporcional ao tempo de CPU
-			processCPUWatts := 0.0
-			processDRAMWatts := 0.0
-			if totalCPUNs > 0 {
-				ratio := float64(stat.cpuNs) / float64(totalCPUNs)
-				processCPUWatts = cpuWatts * ratio
-				processDRAMWatts = dramWatts * ratio
-			}
-
-			// Atribuição de watts de GPU
-			processGPUWatts := 0.0
-			if stat.gpuIdx >= 0 && gpuDevCount > 0 {
-				// Se o processo está rodando na GPU, atribui o consumo dessa GPU
-				w, err := gpu.GetDevicePowerUsage(stat.gpuIdx)
-				if err == nil {
-					processGPUWatts = w
-				}
-			}
-
-			cpuCount := 4.0
-			if envCpu := os.Getenv("GT_CPU_COUNT"); envCpu != "" {
-				if parsed, err := strconv.ParseFloat(envCpu, 64); err == nil && parsed > 0 {
-					cpuCount = parsed
-				}
-			}
-			cpuUtil := (float64(stat.cpuNs) / float64(interval.Nanoseconds())) * 100.0 / cpuCount
-			if cpuUtil > 100.0 {
-				cpuUtil = 100.0
-			}
-
-			// Constrói payload de telemetria
-			event := &pb.EnergyEvent{
-				TimestampNs:      now,
-				AgentId:          *agentID,
-				Hostname:         hostname,
-				Pid:              int32(pid),
-				Workload:         *workloadName,
-				Model:            *modelName,
-				WattsCpu:         processCPUWatts,
-				WattsDram:        processDRAMWatts,
-				WattsGpu:         processGPUWatts,
-				GpuIndex:         int32(stat.gpuIdx),
-				TokensInWindow:   tokensInWindow,
-				WindowSeconds:    interval.Seconds(),
-				CpuUtilPct:       cpuUtil,
-				GpuUtilPct:       0.0, // Preenchido se disponível
-				GpuMemUsed:       stat.gpuMem,
-			}
-
-			rb.Enqueue(event)
-			log.Printf("[TELEMETRIA] Enfileirado PID=%d (%s): W_cpu=%.2f W_dram=%.2f W_gpu=%.2f Tokens=%d Util_cpu=%.1f%%",
-				pid, stat.comm, processCPUWatts, processDRAMWatts, processGPUWatts, tokensInWindow, cpuUtil)
+			matchedPIDs = append(matchedPIDs, pid)
+			matchedTotalCPUNs += stat.cpuNs
 		}
+	}
+
+	tokensRemaining := tokensInWindow
+
+	// Constrói eventos de energia para os processos alvo
+	for i, pid := range matchedPIDs {
+		stat := snapMap[pid]
+		
+		// Atribuição de energia proporcional ao tempo de CPU global
+		processCPUWatts := 0.0
+		processDRAMWatts := 0.0
+		if totalCPUNs > 0 {
+			ratio := float64(stat.cpuNs) / float64(totalCPUNs)
+			processCPUWatts = cpuWatts * ratio
+			processDRAMWatts = dramWatts * ratio
+		}
+
+		// Atribuição de tokens proporcional ao tempo de CPU dentre os processos do workload
+		var processTokens int64 = 0
+		if i == len(matchedPIDs)-1 {
+			// O último PID recebe o restante dos tokens para evitar perda por arredondamento
+			processTokens = tokensRemaining
+		} else if matchedTotalCPUNs > 0 {
+			workloadRatio := float64(stat.cpuNs) / float64(matchedTotalCPUNs)
+			processTokens = int64(float64(tokensInWindow) * workloadRatio)
+			tokensRemaining -= processTokens
+		}
+
+		// Atribuição de watts de GPU
+		processGPUWatts := 0.0
+		if stat.gpuIdx >= 0 && gpuDevCount > 0 {
+			// Se o processo está rodando na GPU, atribui o consumo dessa GPU
+			w, err := gpu.GetDevicePowerUsage(stat.gpuIdx)
+			if err == nil {
+				processGPUWatts = w
+			}
+		}
+
+		cpuCount := 4.0
+		if envCpu := os.Getenv("GT_CPU_COUNT"); envCpu != "" {
+			if parsed, err := strconv.ParseFloat(envCpu, 64); err == nil && parsed > 0 {
+				cpuCount = parsed
+			}
+		}
+		cpuUtil := (float64(stat.cpuNs) / float64(interval.Nanoseconds())) * 100.0 / cpuCount
+		if cpuUtil > 100.0 {
+			cpuUtil = 100.0
+		}
+
+		// Constrói payload de telemetria
+		event := &pb.EnergyEvent{
+			TimestampNs:      now,
+			AgentId:          *agentID,
+			Hostname:         hostname,
+			Pid:              int32(pid),
+			Workload:         *workloadName,
+			Model:            *modelName,
+			WattsCpu:         processCPUWatts,
+			WattsDram:        processDRAMWatts,
+			WattsGpu:         processGPUWatts,
+			GpuIndex:         int32(stat.gpuIdx),
+			TokensInWindow:   processTokens,
+			WindowSeconds:    interval.Seconds(),
+			CpuUtilPct:       cpuUtil,
+			GpuUtilPct:       0.0, // Preenchido se disponível
+			GpuMemUsed:       stat.gpuMem,
+		}
+
+		rb.Enqueue(event)
+		log.Printf("[TELEMETRIA] Enfileirado PID=%d (%s): W_cpu=%.2f W_dram=%.2f W_gpu=%.2f Tokens=%d Util_cpu=%.1f%%",
+			pid, stat.comm, processCPUWatts, processDRAMWatts, processGPUWatts, processTokens, cpuUtil)
 	}
 }
 

@@ -1,8 +1,8 @@
 # Binaries and executable files
 bin/
-greentoken-agent
-greentoken-collector
-greentoken
+/greentoken-agent
+/greentoken-collector
+/greentoken
 *.exe
 *.exe~
 *.dll
