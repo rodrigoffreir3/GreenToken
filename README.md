@@ -159,7 +159,7 @@ GreenToken shares architectural DNA with [Imunno System](https://github.com/rodr
 
 ## License
 
-GPL v3 — see [LICENSE](LICENSE)
+MPL 2.0 — see [LICENSE](LICENSE)
 
 ---
 
