@@ -1,0 +1,7 @@
+# HELP vllm:generation_tokens_total Number of generation tokens.
+# TYPE vllm:generation_tokens_total counter
+vllm:generation_tokens_total{model_name="meta-llama/Llama-3-8b-instruct"} 12345.0
+vllm:generation_tokens_total{model_name="another-model"} 20.0
+# HELP vllm:prompt_tokens_total Number of prefill tokens.
+# TYPE vllm:prompt_tokens_total counter
+vllm:prompt_tokens_total{model_name="meta-llama/Llama-3-8b-instruct"} 1000.0

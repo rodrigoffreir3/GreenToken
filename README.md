@@ -60,6 +60,19 @@ Existing tools (Prometheus, DCGM, OpenTelemetry) measure aggregate host energy. 
 
 ---
 
+## Token Sources
+
+GreenToken abstrai a contagem de tokens em fontes configuráveis. Por padrão, ele usa uma abordagem segura e cumulativa via endpoint HTTP Prometheus para evitar sub/super contagem inerente ao parse de `stdout`.
+
+*   `prometheus` (**Default**): Fonte de verdade. Faz requisição ao endpoint `/metrics` do engine (ex: vLLM) e lê contadores como `vllm:generation_tokens_total`. É a opção recomendada e mais precisa para ambientes de produção sob alta concorrência.
+*   `logsniffer`: Fallback best-effort para engines que não expõem métricas estruturadas. Conta tokens acompanhando o arquivo de log (requer `--log-file`). *Limitação conhecida:* o engine de inferência pode apresentar buffers e output mal-comportados sob rajada, tornando a contagem de logs suscetível a erros ou duplicações.
+*   `none`: Desativa a contagem de tokens (o custo e uso de energia ainda serão coletados corretamente e o agente continua rodando por degradação graciosa).
+
+Para rodar com a fonte antiga baseada em log:
+`greentoken-agent --token-source logsniffer --log-file /path/to/log`
+
+---
+
 ## Metrics exported
 
 | Metric | Description |
@@ -95,7 +108,7 @@ GT-00 spike ran on Kaggle Tesla T4, Qwen2.5-0.5B-Instruct-Q4, 3 runs × 20 reque
 Transparency is a core engineering principle for GreenToken. The v1.0 architecture currently operates under these limitations:
 
 1. **Token Allocation is a Heuristic:** In multi-process environments matching the same workload name, tokens sniffed from logs are *distributed proportionally* based on CPU time (`cpuNs`). While this maintains atomicity for the workload as a whole, it assumes "more CPU time = more tokens", which is an approximation (especially if two different models run simultaneously on the same host).
-2. **Log Parser Validation:** The 0% error rate for token counting was validated on the GT-00 spike using native API responses (`completion_tokens`). The regex-based log sniffer is a fallback and has not yet been stress-tested against the native API numbers in production.
+2. **Log Parser Validation (Resolved via GT-02):** The 0% error rate for token counting was validated on the GT-00 spike using native API responses (`completion_tokens`). GT-00b revealed issues under extreme concurrency via stdout parsing. GT-02 resolved this by making `/metrics` the single source of truth for generation tokens. The regex-based log sniffer remains purely as a fallback.
 3. **PID Matching Fragility:** By default, if `--workload` is a name, GreenToken matches by process name (`comm`), which could catch unrelated processes (e.g., matching all `python` processes). **Fix:** You can now pass an exact PID (e.g., `--workload 12345`) to bypass string matching, or rely on GreenToken's NVML heuristic (it will only match `comm` if the process is actually mapped to a GPU, avoiding idle background processes).
 
 ---
@@ -160,7 +173,7 @@ GreenToken shares architectural DNA with [Imunno System](https://github.com/rodr
 ## Roadmap
 
 - **GT-01** — MVP: RAPL + NVML + eBPF sched + Prometheus exporter + Grafana dashboard
-- **GT-02** — vllm native `/metrics` integration (replaces stdout token parsing)
+- **GT-02** — vLLM native `/metrics` integration via `TokenSource` abstraction (Completed)
 - **GT-03** — Multi-GPU + MIG support
 - **GT-04** — Cost anomaly detection (statistical baseline per model)
 - **GT-05** — Digital Twin: simulate cost of a model before deploying

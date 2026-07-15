@@ -3,14 +3,12 @@ package main
 import (
 	"context"
 	"flag"
-	"io"
 	"log"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -31,6 +29,10 @@ var (
 	modelName    = flag.String("model", "llama3", "Nome do modelo de IA (ex: llama3-8b)")
 	logFilePath  = flag.String("log-file", "", "Caminho do arquivo de log da engine de inferência para sniffar tokens")
 	windowSecs   = flag.Int("interval", 2, "Janela de medição em segundos")
+	
+	tokenSourceFlag = flag.String("token-source", "prometheus", "Fonte de tokens: prometheus | logsniffer | none")
+	metricsURL      = flag.String("metrics-url", "http://localhost:8000/metrics", "URL do endpoint /metrics")
+	metricsName     = flag.String("metrics-name", "vllm:generation_tokens_total", "Nome da métrica Prometheus")
 )
 
 type PIDStats struct {
@@ -41,7 +43,6 @@ type PIDStats struct {
 }
 
 var (
-	accumulatedTokens int64
 	windowChan        = make(chan EnergyWindow, 10000)
 	cpuTimeMap        = make(map[uint32]*PIDStats)
 	cpuTimeMapMu      sync.Mutex
@@ -70,6 +71,15 @@ func main() {
 	}
 	if env := os.Getenv("GT_LOG_FILE"); env != "" {
 		*logFilePath = env
+	}
+	if env := os.Getenv("GT_TOKEN_SOURCE"); env != "" {
+		*tokenSourceFlag = env
+	}
+	if env := os.Getenv("GT_METRICS_URL"); env != "" {
+		*metricsURL = env
+	}
+	if env := os.Getenv("GT_METRICS_NAME"); env != "" {
+		*metricsName = env
 	}
 
 	log.Printf("GreenToken Agent iniciando...")
@@ -101,9 +111,30 @@ func main() {
 		log.Println("GPU: NVML inicializado com sucesso.")
 	}
 
-	// Sniffa tokens do arquivo de log
-	if *logFilePath != "" {
-		go startLogSniffer(*logFilePath)
+	// Configuração da fonte de tokens
+	var tokenSource tokens.TokenSource
+	switch *tokenSourceFlag {
+	case "prometheus":
+		tokenSource = tokens.NewPrometheusTokenSource(*metricsURL, *metricsName)
+	case "logsniffer":
+		if *logFilePath == "" {
+			log.Fatal("LogFile é obrigatório para token-source=logsniffer")
+		}
+		tokenSource = tokens.NewLogSnifferTokenSource(*logFilePath)
+	case "none":
+		tokenSource = &tokens.NullTokenSource{}
+	default:
+		log.Fatalf("Fonte de tokens desconhecida: %s", *tokenSourceFlag)
+	}
+	log.Printf("[TOKEN] Fonte de tokens configurada: %s", tokenSource.Name())
+
+	var previousCumulative int64
+	var baselineEstablished bool
+	if initial, err := tokenSource.CumulativeTokens(); err == nil {
+		previousCumulative = initial
+		baselineEstablished = true
+	} else {
+		log.Printf("[TOKEN] Aviso ao inicializar baseline de tokens: %v", err)
 	}
 
 	// Inicializa Buffer Circular para resiliência de rede
@@ -131,56 +162,12 @@ func main() {
 			log.Println("Encerrando agente graciosamente...")
 			return
 		case <-ticker.C:
-			collectAndEnqueue(hostname, rb)
+			collectAndEnqueue(hostname, rb, tokenSource, &previousCumulative, &baselineEstablished)
 		}
 	}
 }
 
-func startLogSniffer(path string) {
-	log.Printf("Iniciando sniffer de tokens no arquivo: %s", path)
-	var file *os.File
-	var err error
-
-	for {
-		file, err = os.Open(path)
-		if err == nil {
-			break
-		}
-		time.Sleep(2 * time.Second)
-	}
-	defer file.Close()
-
-	// Posiciona no final do arquivo atual
-	_, _ = file.Seek(0, io.SeekEnd)
-	buffer := make([]byte, 8192)
-	var pending string
-
-	for {
-		n, err := file.Read(buffer)
-		if n > 0 {
-			pending += string(buffer[:n])
-			lines := strings.Split(pending, "\n")
-			// Guarda a última linha incompleta
-			pending = lines[len(lines)-1]
-
-			for i := 0; i < len(lines)-1; i++ {
-				if t, matched := tokens.CountTokens(lines[i]); matched {
-					atomic.AddInt64(&accumulatedTokens, t)
-				}
-			}
-		}
-		if err == io.EOF {
-			time.Sleep(200 * time.Millisecond)
-			continue
-		}
-		if err != nil {
-			log.Printf("Erro lendo log de tokens: %v", err)
-			time.Sleep(2 * time.Second)
-		}
-	}
-}
-
-func collectAndEnqueue(hostname string, rb *RingBuffer) {
+func collectAndEnqueue(hostname string, rb *RingBuffer, tokenSource tokens.TokenSource, previousCumulative *int64, baselineEstablished *bool) {
 	interval := time.Duration(*windowSecs) * time.Second
 
 	// 1. Coleta consumo total de CPU/DRAM via RAPL
@@ -238,8 +225,26 @@ func collectAndEnqueue(hostname string, rb *RingBuffer) {
 		totalCPUNs += stat.cpuNs
 	}
 
-	// Lê total de tokens gerados na janela
-	tokensInWindow := atomic.SwapInt64(&accumulatedTokens, 0)
+	// Lê total de tokens gerados na janela via fonte cumulativa
+	current, err := tokenSource.CumulativeTokens()
+	if err != nil {
+		log.Printf("[TOKEN] fonte %s indisponível: %v — janela com 0 tokens", tokenSource.Name(), err)
+		current = *previousCumulative
+	} else {
+		if !*baselineEstablished {
+			// Primeira leitura com sucesso após falha no startup!
+			// Estabelece o baseline e zera o delta desta janela para evitar spike artificial.
+			*previousCumulative = current
+			*baselineEstablished = true
+			log.Printf("[TOKEN] Baseline de tokens estabelecido atrasado: %d", current)
+		}
+	}
+	
+	tokensInWindow := current - *previousCumulative
+	if tokensInWindow < 0 {
+		tokensInWindow = 0
+	}
+	*previousCumulative = current
 
 	// 4. Identifica processos que coincidem com o PID selecionado
 	now := time.Now().UnixNano()
