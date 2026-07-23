@@ -11,6 +11,11 @@ func Init() error {
 	return nil
 }
 
+// GPUSupported retorna se o binário foi compilado com suporte real a GPU.
+func GPUSupported() bool {
+	return false
+}
+
 // Shutdown finaliza o uso da biblioteca NVML (no stub, não faz nada).
 func Shutdown() error {
 	return nil

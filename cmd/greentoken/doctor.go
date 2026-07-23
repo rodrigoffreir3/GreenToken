@@ -137,11 +137,19 @@ func checkEBPF() CheckResult {
 }
 
 func checkGPU() CheckResult {
+	if !gpu.GPUSupported() {
+		return CheckResult{
+			Name:    "GPU",
+			Status:  StatusAviso,
+			Message: "Binário sem suporte a GPU (build stub). W_gpu será 0.",
+		}
+	}
+
 	if err := gpu.Init(); err != nil {
 		return CheckResult{
 			Name:    "GPU",
 			Status:  StatusAviso,
-			Message: fmt.Sprintf("Binário sem suporte a GPU (build stub) ou driver NVIDIA ausente (%v). W_gpu será 0.", err),
+			Message: fmt.Sprintf("Driver NVIDIA ausente ou inacessível (%v). W_gpu será 0.", err),
 		}
 	}
 	defer gpu.Shutdown()
