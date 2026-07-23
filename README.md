@@ -152,6 +152,8 @@ For environments with NVIDIA GPU support enabled:
 curl -fsSL https://raw.githubusercontent.com/rodrigoffreir3/GreenToken/main/deploy/install.sh | sh -s -- --gpu
 ```
 
+See the [Releases page](https://github.com/rodrigoffreir3/GreenToken/releases) for the full changelog and all available artifacts.
+
 ### Verifying your download (Manual / Zero-Trust)
 
 If you prefer not to use pipe-to-shell, download and verify the release artifacts manually:
@@ -186,19 +188,37 @@ greentoken doctor --metrics-url http://localhost:8000/metrics --metrics-name vll
 
 ## Quickstart
 
+After installing via the [one-line installer](#installation), you have three binaries: `greentoken-agent`, `greentoken-collector`, and `greentoken` (CLI).
+
 ```bash
-# Clone
-git clone https://github.com/rodrigoffreir3/greentoken
-cd greentoken
+# 1. Diagnose your environment first — confirms RAPL, eBPF, NVML, and your
+#    inference engine's /metrics endpoint are reachable before you run anything.
+greentoken doctor --metrics-url http://localhost:8000/metrics --metrics-name vllm:generation_tokens_total
 
-# Build
-make build-agent build-collector
+# 2. Start the collector (exposes the Prometheus exporter on :9090 by default)
+greentoken-collector &
 
-# Run (requires root for eBPF + RAPL access)
-docker compose up
+# 3. Start the agent (reads energy from RAPL/NVML/eBPF, tokens from your
+#    inference engine's /metrics on :8000, streams to the collector via gRPC)
+sudo greentoken-agent \
+  --collector localhost:50051 \
+  --metrics-url http://localhost:8000/metrics \
+  --metrics-name vllm:generation_tokens_total \
+  --pid <your_inference_engine_pid>
 
-# View metrics
+# 4. View the exported metrics (collector's own port, not the inference engine's)
 curl localhost:9090/metrics | grep greentoken
+
+# 5. Or get a human-readable cost report
+greentoken report --model llama3 --since 1h
+```
+
+**Building from source** (only needed for development or unsupported architectures):
+
+```bash
+git clone https://github.com/rodrigoffreir3/GreenToken
+cd GreenToken
+make build-agent build-collector build-cli
 ```
 
 **Environment variables:**
@@ -208,6 +228,8 @@ curl localhost:9090/metrics | grep greentoken
 | `GT_KWH_PRICE` | `0.12` | USD per kWh (electricity cost) |
 | `GT_GPU_INDEX` | `0` | GPU device index |
 | `GT_COLLECTOR_ADDR` | `localhost:50051` | Collector gRPC address |
+
+> **Note on ports:** `:8000` in the examples above is your *inference engine's* `/metrics` endpoint (e.g., vLLM) — GreenToken reads from it. `:9090` is the *collector's own* Prometheus exporter — your Grafana/Prometheus stack reads from that one. They are not the same port.
 
 ---
 
