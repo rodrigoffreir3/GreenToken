@@ -109,13 +109,26 @@ func checkRAPL() CheckResult {
 func checkEBPF() CheckResult {
 	_, errDebug := os.Stat(debugfsTracePath)
 	_, errProc := os.Stat(procTracePath)
-	if errDebug == nil || os.IsPermission(errDebug) || errProc == nil || os.IsPermission(errProc) {
+
+	// Caso 1: pelo menos um path existe e é acessível — eBPF/tracing disponível de verdade.
+	if errDebug == nil || errProc == nil {
 		return CheckResult{
 			Name:    "eBPF",
 			Status:  StatusOK,
 			Message: "eBPF/tracing disponível no kernel",
 		}
 	}
+
+	// Caso 2: o path existe mas o processo não tem permissão de acesso — FALHA de permissão.
+	if os.IsPermission(errDebug) || os.IsPermission(errProc) {
+		return CheckResult{
+			Name:    "eBPF",
+			Status:  StatusFalha,
+			Message: "eBPF/tracing existe no kernel mas o acesso foi negado. Rode com sudo ou configure CAP_BPF/CAP_PERFMON.",
+		}
+	}
+
+	// Caso 3: nenhum dos dois paths existe — kernel sem suporte, fallback esperado.
 	return CheckResult{
 		Name:    "eBPF",
 		Status:  StatusAviso,

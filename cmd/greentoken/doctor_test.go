@@ -64,6 +64,38 @@ func TestCheckEBPF(t *testing.T) {
 	}
 }
 
+func TestCheckEBPF_PermissaoNegada(t *testing.T) {
+	if isRootFunc() {
+		t.Skip("rodando com privilégios elevados — restrição de permissão não é aplicável neste teste")
+	}
+
+	tmpDir := t.TempDir()
+	origDebug := debugfsTracePath
+	origProc := procTracePath
+	defer func() {
+		debugfsTracePath = origDebug
+		procTracePath = origProc
+	}()
+
+	restricted := filepath.Join(tmpDir, "debugfs-restrito")
+	if err := os.MkdirAll(restricted, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Remove toda permissão de acesso do diretório para simular negação real.
+	if err := os.Chmod(restricted, 0000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(restricted, 0755) // garante limpeza do t.TempDir()
+
+	debugfsTracePath = restricted
+	procTracePath = filepath.Join(tmpDir, "proc-inexistente")
+
+	res := checkEBPF()
+	if res.Status != StatusFalha {
+		t.Errorf("Esperava FALHA para permissão negada, obteve %s (msg: %s)", res.Status, res.Message)
+	}
+}
+
 func TestCheckGPU(t *testing.T) {
 	res := checkGPU()
 	if res.Status != StatusAviso {
