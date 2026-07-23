@@ -92,9 +92,12 @@ echo "[GreenToken] Instalando binários em $PREFIX..."
 tar -xzf "${TARBALL}" -C "$TMPDIR"
 
 mkdir -p "$PREFIX"
-for bin in greentoken greentoken-agent greentoken-collector; do
-    # Procura o binário extraído que pode ter sufixos de OS/ARCH
-    FOUND=$(find "$TMPDIR" -maxdepth 2 -type f -name "${bin}*" ! -name "*.tar.gz*" ! -name "*.sha256" | head -n 1)
+for bin in greentoken-agent greentoken-collector greentoken; do
+    if [ "$bin" = "greentoken" ]; then
+        FOUND=$(find "$TMPDIR" -maxdepth 2 -type f -name "greentoken-${OS}*" ! -name "*.tar.gz*" ! -name "*.sha256" | head -n 1)
+    else
+        FOUND=$(find "$TMPDIR" -maxdepth 2 -type f -name "${bin}*" ! -name "*.tar.gz*" ! -name "*.sha256" | head -n 1)
+    fi
     if [ -n "$FOUND" ]; then
         install -m 755 "$FOUND" "${PREFIX}/${bin}"
         echo "  - Instalado: ${PREFIX}/${bin}"

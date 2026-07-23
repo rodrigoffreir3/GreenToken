@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"greentoken/agent/gpu"
 )
 
 type Status string
@@ -103,7 +105,7 @@ func checkRAPL() CheckResult {
 func checkEBPF() CheckResult {
 	_, errDebug := os.Stat(debugfsTracePath)
 	_, errProc := os.Stat(procTracePath)
-	if errDebug == nil || errProc == nil {
+	if errDebug == nil || os.IsPermission(errDebug) || errProc == nil || os.IsPermission(errProc) {
 		return CheckResult{
 			Name:    "eBPF",
 			Status:  StatusOK,
@@ -118,10 +120,28 @@ func checkEBPF() CheckResult {
 }
 
 func checkGPU() CheckResult {
+	if err := gpu.Init(); err != nil {
+		return CheckResult{
+			Name:    "GPU",
+			Status:  StatusAviso,
+			Message: fmt.Sprintf("Binário sem suporte a GPU (build stub) ou driver NVIDIA ausente (%v). W_gpu será 0.", err),
+		}
+	}
+	defer gpu.Shutdown()
+
+	count, err := gpu.GetDeviceCount()
+	if err != nil || count == 0 {
+		return CheckResult{
+			Name:    "GPU",
+			Status:  StatusAviso,
+			Message: "NVML inicializado, mas nenhuma GPU NVIDIA ativa foi detectada. W_gpu será 0.",
+		}
+	}
+
 	return CheckResult{
 		Name:    "GPU",
-		Status:  StatusAviso,
-		Message: "Binário sem suporte a GPU (build stub) ou driver NVIDIA ausente. W_gpu será 0.",
+		Status:  StatusOK,
+		Message: fmt.Sprintf("NVML disponível, %d GPU(s) NVIDIA detectada(s) (tag: gpu)", count),
 	}
 }
 
