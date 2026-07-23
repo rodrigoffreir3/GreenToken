@@ -137,6 +137,53 @@ eBPF `sched_switch` tracepoints correlate energy windows to specific PIDs with m
 
 ---
 
+## Installation
+
+### One-line installer (Recommended)
+
+To install GreenToken (CLI, Agent, Collector) with automatic SHA256 checksum verification:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rodrigoffreir3/GreenToken/main/deploy/install.sh | sh
+```
+
+For environments with NVIDIA GPU support enabled:
+```bash
+curl -fsSL https://raw.githubusercontent.com/rodrigoffreir3/GreenToken/main/deploy/install.sh | sh -s -- --gpu
+```
+
+### Verifying your download (Manual / Zero-Trust)
+
+If you prefer not to use pipe-to-shell, download and verify the release artifacts manually:
+
+```bash
+# 1. Download tarball and checksum
+VERSION="v0.1.0"
+curl -LO "https://github.com/rodrigoffreir3/GreenToken/releases/download/${VERSION}/greentoken_${VERSION}_linux_amd64.tar.gz"
+curl -LO "https://github.com/rodrigoffreir3/GreenToken/releases/download/${VERSION}/greentoken_${VERSION}_linux_amd64.tar.gz.sha256"
+
+# 2. Verify SHA256 integrity
+sha256sum -c "greentoken_${VERSION}_linux_amd64.tar.gz.sha256"
+
+# 3. Extract and install
+tar -xzf "greentoken_${VERSION}_linux_amd64.tar.gz"
+sudo mv greentoken* /usr/local/bin/
+```
+
+---
+
+## Environment Diagnostics (`greentoken doctor`)
+
+Before starting the agent, diagnose your host system capabilities:
+
+```bash
+greentoken doctor --metrics-url http://localhost:8000/metrics --metrics-name vllm:generation_tokens_total
+```
+
+`greentoken doctor` checks RAPL powercap, eBPF tracing, NVML GPU support, process privileges, collector connectivity, and token source metrics — reporting `OK`, `AVISO`, or `FALHA` without altering your environment.
+
+---
+
 ## Quickstart
 
 ```bash
@@ -172,11 +219,12 @@ GreenToken shares architectural DNA with [Imunno System](https://github.com/rodr
 
 ## Roadmap
 
-- **GT-01** — MVP: RAPL + NVML + eBPF sched + Prometheus exporter + Grafana dashboard
+- **GT-01** — MVP: RAPL + NVML + eBPF sched + Prometheus exporter + Grafana dashboard (Completed)
 - **GT-02** — vLLM native `/metrics` integration via `TokenSource` abstraction (Completed)
-- **GT-03** — Multi-GPU + MIG support
-- **GT-04** — Cost anomaly detection (statistical baseline per model)
-- **GT-05** — Digital Twin: simulate cost of a model before deploying
+- **GT-03** — Release Engineering: Public Release `v0.1.0` + Multi-variant build + `greentoken doctor` + Installer SHA256 (Completed)
+- **GT-04** — Multi-GPU + MIG support
+- **GT-05** — Cost anomaly detection (statistical baseline per model)
+- **GT-06** — Digital Twin: simulate cost of a model before deploying
 
 ---
 

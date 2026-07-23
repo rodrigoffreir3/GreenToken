@@ -1,37 +1,107 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-INSTALL_DIR="/usr/local/bin"
-CONFIG_DIR="/etc/greentoken"
+REPO="rodrigoffreir3/GreenToken"
+PREFIX="/usr/local/bin"
+VARIANT="stub"
+VERSION=""
 
-echo "[GreenToken] Compilando o agente..."
-make build-agent
+# Parse de argumentos
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --gpu)
+      VARIANT="gpu"
+      shift
+      ;;
+    --prefix)
+      PREFIX="$2"
+      shift 2
+      ;;
+    --version)
+      VERSION="$2"
+      shift 2
+      ;;
+    *)
+      echo "Opção desconhecida: $1"
+      echo "Uso: $0 [--gpu] [--prefix /usr/local/bin] [--version v0.1.0]"
+      exit 1
+      ;;
+  esac
+done
 
-echo "[GreenToken] Instalando o binário do agente em $INSTALL_DIR..."
-install -m 755 ./bin/greentoken-agent $INSTALL_DIR/greentoken-agent
+# Detecção de OS e Arquitetura
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+ARCH="$(uname -m)"
 
-mkdir -p $CONFIG_DIR
-chmod 755 $CONFIG_DIR
-
-if [ ! -f "$CONFIG_DIR/agent.env" ]; then
-    echo "[GreenToken] Criando arquivo de ambiente padrão em $CONFIG_DIR/agent.env..."
-    cat <<EOF > "$CONFIG_DIR/agent.env"
-GT_COLLECTOR_URL=localhost:50051
-GT_AGENT_ID=host-agent-01
-GT_WORKLOAD_NAME=vllm
-GT_MODEL_NAME=llama3
-GT_CPU_COUNT=4
-# GT_LOG_FILE=/path/to/inference.log
-EOF
-    chmod 600 "$CONFIG_DIR/agent.env"
+if [ "$OS" != "linux" ]; then
+    echo "[ERRO] GreenToken é suportado nativamente apenas em Linux (detectado: $OS)."
+    exit 1
 fi
 
-echo "[GreenToken] Copiando serviço systemd..."
-cp ./deploy/greentoken-agent.service /etc/systemd/system/
+case "$ARCH" in
+    x86_64|amd64)
+        ARCH="amd64"
+        ;;
+    aarch64|arm64)
+        ARCH="arm64"
+        ;;
+    *)
+        echo "[ERRO] Arquitetura $ARCH não suportada."
+        exit 1
+        ;;
+esac
 
-echo "[GreenToken] Recarregando daemon e habilitando o serviço..."
-systemctl daemon-reload
-systemctl enable greentoken-agent
+# Tratamento da variante GPU (somente amd64)
+VARIANT_SUFFIX=""
+if [ "$VARIANT" = "gpu" ]; then
+    if [ "$ARCH" != "amd64" ]; then
+        echo "[AVISO] Suporte a GPU (-gpu) disponível apenas para linux/amd64 nesta versão. Usando variante stub."
+    else
+        VARIANT_SUFFIX="-gpu"
+    fi
+fi
 
-echo "[GreenToken] Instalação concluída com sucesso."
-echo "[GreenToken] Ajuste o arquivo $CONFIG_DIR/agent.env se necessário e inicie o serviço com: systemctl start greentoken-agent"
+# Determina versão a baixar
+if [ -z "$VERSION" ]; then
+    echo "[GreenToken] Buscando última versão lançada..."
+    VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || echo "v0.1.0")
+fi
+
+TARBALL="greentoken_${VERSION}_${OS}_${ARCH}${VARIANT_SUFFIX}.tar.gz"
+SHA256FILE="${TARBALL}.sha256"
+DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}"
+
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+
+echo "[GreenToken] Baixando GreenToken $VERSION ($OS/$ARCH$VARIANT_SUFFIX)..."
+curl -fsSL "${DOWNLOAD_URL}/${TARBALL}" -o "${TMPDIR}/${TARBALL}"
+curl -fsSL "${DOWNLOAD_URL}/${SHA256FILE}" -o "${TMPDIR}/${SHA256FILE}"
+
+echo "[GreenToken] Validando integridade SHA256 (Zero-Trust)..."
+cd "$TMPDIR"
+if ! sha256sum -c "${SHA256FILE}"; then
+    echo "[ERRO CRÍTICO] Checksum SHA256 não confere!"
+    echo "O arquivo baixado pode ter sido corrompido ou adulterado em trânsito. Instalação abortada."
+    exit 1
+fi
+echo "[GreenToken] ✅ Checksum SHA256 verificado com sucesso."
+
+# Extrai e instala
+echo "[GreenToken] Instalando binários em $PREFIX..."
+tar -xzf "${TARBALL}" -C "$TMPDIR"
+
+mkdir -p "$PREFIX"
+for bin in greentoken greentoken-agent greentoken-collector; do
+    # Procura o binário extraído que pode ter sufixos de OS/ARCH
+    FOUND=$(find "$TMPDIR" -maxdepth 2 -type f -name "${bin}*" ! -name "*.tar.gz*" ! -name "*.sha256" | head -n 1)
+    if [ -n "$FOUND" ]; then
+        install -m 755 "$FOUND" "${PREFIX}/${bin}"
+        echo "  - Instalado: ${PREFIX}/${bin}"
+    fi
+done
+
+echo ""
+echo "[GreenToken] 🎉 Instalação concluída com sucesso!"
+echo "[GreenToken] Para diagnosticar o ambiente e validar permissões/recursos, rode:"
+echo "  greentoken doctor"

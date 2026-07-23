@@ -210,6 +210,12 @@ func collectAndEnqueue(hostname string, rb *RingBuffer, tokenSource tokens.Token
 	}
 	cpuTimeMapMu.Unlock()
 
+	if *targetPID > 0 {
+		if _, exists := snapMap[uint32(*targetPID)]; !exists {
+			snapMap[uint32(*targetPID)] = &PIDStats{comm: *workloadName, cpuNs: 0, gpuIdx: -1}
+		}
+	}
+
 	// Vincula processos a GPUs e memórias
 	for pid, gpuIdx := range gpuMap {
 		if stat, exists := snapMap[pid]; exists {

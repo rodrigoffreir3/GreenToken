@@ -43,6 +43,8 @@ func main() {
 		runServe(os.Args[2:])
 	case "report":
 		runReport(os.Args[2:])
+	case "doctor":
+		runDoctor(os.Args[2:])
 	case "help", "-h", "--help":
 		printHelp()
 	default:
@@ -59,6 +61,7 @@ func printHelp() {
 	fmt.Println("\nComandos disponíveis:")
 	fmt.Println("  serve     Inicializa o collector gRPC e o exporter Prometheus")
 	fmt.Println("  report    Consulta o Prometheus e imprime um relatório de custo por token")
+	fmt.Println("  doctor    Executa um diagnóstico completo do ambiente")
 	fmt.Println("\nExecute 'greentoken <comando> --help' para ver as flags de cada comando.")
 }
 

@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build Release Binary (${{ matrix.os }}/${{ matrix.arch }}/${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            variant: stub
+            tags: ""
+            cgo: 0
+          - os: linux
+            arch: amd64
+            variant: gpu
+            tags: "gpu"
+            cgo: 1
+          - os: linux
+            arch: arm64
+            variant: stub
+            tags: ""
+            cgo: 0
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Install CGO dependencies for GPU
+        if: matrix.variant == 'gpu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libnvidia-ml-dev || true
+
+      - name: Build Binaries
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG_NAME}"
+          
+          VARIANT_SUFFIX=""
+          if [ "${{ matrix.variant }}" = "gpu" ]; then
+            VARIANT_SUFFIX="-gpu"
+          fi
+          
+          BUILD_DIR="dist_${{ matrix.os }}_${{ matrix.arch }}${VARIANT_SUFFIX}"
+          mkdir -p "${BUILD_DIR}"
+          
+          AGENT_BIN="${BUILD_DIR}/greentoken-agent-${{ matrix.os }}-${{ matrix.arch }}${VARIANT_SUFFIX}"
+          COLLECTOR_BIN="${BUILD_DIR}/greentoken-collector-${{ matrix.os }}-${{ matrix.arch }}"
+          CLI_BIN="${BUILD_DIR}/greentoken-${{ matrix.os }}-${{ matrix.arch }}"
+          
+          TAG_FLAG=""
+          if [ -n "${{ matrix.tags }}" ]; then
+            TAG_FLAG="-tags ${{ matrix.tags }}"
+          fi
+
+          echo "Building agent (${{ matrix.variant }})..."
+          CGO_ENABLED=${{ matrix.cgo }} GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build ${TAG_FLAG} -ldflags="-s -w" -o "${AGENT_BIN}" ./agent
+
+          echo "Building collector..."
+          CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -ldflags="-s -w" -o "${COLLECTOR_BIN}" ./collector
+
+          echo "Building CLI..."
+          CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -ldflags="-s -w" -o "${CLI_BIN}" ./cmd/greentoken
+
+          TARBALL="greentoken_${VERSION}_${{ matrix.os }}_${{ matrix.arch }}${VARIANT_SUFFIX}.tar.gz"
+          
+          # Compacta os binários construídos nesta matriz
+          tar -czvf "${TARBALL}" -C "${BUILD_DIR}" .
+          
+          # Gera arquivo checksum SHA256
+          sha256sum "${TARBALL}" > "${TARBALL}.sha256"
+
+      - name: Upload Release Artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            greentoken_*.tar.gz
+            greentoken_*.tar.gz.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
