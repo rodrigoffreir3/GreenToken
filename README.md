@@ -3,6 +3,8 @@
 **AI Energy FinOps Observability Agent**
 
 > Measure what your inference actually costs — down to the token.
+>
+> 🌐 **Website & Documentation:** [rodrigofreire.pages.dev/greentoken](https://rodrigofreire.pages.dev/greentoken/)
 
 ---
 
