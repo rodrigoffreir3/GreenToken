@@ -16,7 +16,7 @@ import time
 import json
 import argparse
 import statistics
-import math
+import multiprocessing
 from typing import Dict, List, Any, Tuple
 
 # Reuso dos Sensores e Coletor Contínuo validados no E1
@@ -171,26 +171,13 @@ def measure_baseline(rapl: RAPLSensor, nvml: NVMLSensor, duration_s: int = 10) -
 
     return statistics.mean(samples), statistics.stdev(samples) if len(samples) > 1 else 0.0
 
-def run_experiment_e2(num_runs: int = 30) -> Dict[str, Any]:
-    print("=================================================================")
-    print("      INICIANDO EXPERIMENTO E2 (GT-M): ENERGIA A ISO-ACURÁCIA    ")
-    print("=================================================================")
-
-    rapl = RAPLSensor()
-    nvml = NVMLSensor()
-
-    # Inicializa o contexto CUDA previamente para alinhar o P-State do driver NVIDIA nos baselines pré e pós
-    init_bench = IsoAccuracyBenchmark(precision_mode="FP32")
-
-    p_idle_pre, _ = measure_baseline(rapl, nvml, duration_s=10)
-    print(f"[C1] Baseline Pré-Coleta (Estado CUDA Alinhado): {p_idle_pre:.3f} W")
-
-    modes = ["FP32", "FP16", "INT8"]
-    accuracy_baselines = {"FP32": 96.0, "FP16": 95.8, "INT8": 92.5}  # Acurácia de referência %
-    results_per_mode = {}
-
-    for mode in modes:
-        print(f"\n[*] Testando Modo de Precisão: {mode} ({num_runs} repetições)...")
+def worker_inference(mode: str, num_runs: int, p_idle_pre: float, queue: multiprocessing.Queue):
+    """
+    Roda num sub-processo para garantir que quando este processo morrer, o SO e o Driver
+    da NVIDIA matem o contexto CUDA e devolvam a placa para o estado P8 (idle 10W).
+    """
+    try:
+        nvml = NVMLSensor()
         bench = IsoAccuracyBenchmark(precision_mode=mode)
         
         # Warmup térmico C2 (20s por modo para estabilização de hardware)
@@ -213,6 +200,43 @@ def run_experiment_e2(num_runs: int = 30) -> Dict[str, Any]:
             j_net = max(0.0, j_gpu - (p_idle_pre * dt))
             runs_joules.append(j_net)
 
+        queue.put({"status": "ok", "runs_joules": runs_joules})
+    except Exception as e:
+        queue.put({"status": "error", "error": str(e)})
+
+def run_experiment_e2(num_runs: int = 30) -> Dict[str, Any]:
+    print("=================================================================")
+    print("      INICIANDO EXPERIMENTO E2 (GT-M): ENERGIA A ISO-ACURÁCIA    ")
+    print("=================================================================")
+
+    rapl = RAPLSensor()
+    nvml = NVMLSensor()
+
+    # REMOVIDO: A "Mentira" do init_bench (Estado CUDA Alinhado) foi removida.
+    # O PyTorch NUNCA é importado no processo principal. Mediremos o baseline real P8 (~10W).
+    p_idle_pre, _ = measure_baseline(rapl, nvml, duration_s=10)
+    print(f"[C1] Baseline Pré-Coleta (Estado Real Ocioso P8): {p_idle_pre:.3f} W")
+
+    modes = ["FP32", "FP16", "INT8"]
+    accuracy_baselines = {"FP32": 96.0, "FP16": 95.8, "INT8": 92.5}  # Acurácia de referência %
+    results_per_mode = {}
+
+    for mode in modes:
+        print(f"\n[*] Testando Modo de Precisão: {mode} ({num_runs} repetições)...")
+        queue = multiprocessing.Queue()
+        p = multiprocessing.Process(target=worker_inference, args=(mode, num_runs, p_idle_pre, queue))
+        p.start()
+        p.join()
+        
+        # Puxa o resultado e ignora qualquer exceção de get se a fila estiver vazia por crash
+        if not queue.empty():
+            res = queue.get()
+            if res["status"] != "ok":
+                raise RuntimeError(f"Erro no sub-processo ao testar {mode}: {res['error']}")
+            runs_joules = res["runs_joules"]
+        else:
+            raise RuntimeError(f"Sub-processo falhou e morreu sem retornar dados para o modo {mode}.")
+        
         mean_j = statistics.mean(runs_joules)
         std_j = statistics.stdev(runs_joules) if len(runs_joules) > 1 else 0.0
         cv_j = std_j / mean_j if mean_j > 0 else 0.0
@@ -225,33 +249,18 @@ def run_experiment_e2(num_runs: int = 30) -> Dict[str, Any]:
             "cv_pass": cv_j <= 0.15
         }
         print(f"    -> {mode}: Acurácia = {accuracy_baselines[mode]}%, Energia = {mean_j:.4f} J (CV: {cv_j*100:.2f}%)")
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-        except Exception:
-            pass
+        
+        print(f"    -> Sub-processo morto. Limpeza garantida pelo SO. Aguardando resfriamento (5s)...")
         time.sleep(5)  # Cooldown entre modos de precisão
 
-    print("[C1] Liberando recursos da GPU e aguardando resfriamento térmico (pode levar até 3 min na T4)...")
-    try:
-        import torch
-        if torch.cuda.is_available():
-            del bench
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-    except Exception:
-        pass
-    
-    # Smart cooldown longo: Placas de servidor (T4) têm resfriamento passivo
-    for i in range(60):
+    print("[C1] Aguardando resfriamento térmico final (até 30s) para garantir o P-State Ocioso...")
+    for i in range(10):
         time.sleep(3)
         current_w = (nvml.read_mW() / 1000.0) if nvml.available else 0.0
         if current_w > 0 and abs(current_w - p_idle_pre) / p_idle_pre <= 0.045:
             print(f"    -> Estabilizado em {current_w:.3f} W após {i*3}s.")
             break
-        if i > 0 and i % 10 == 0:
+        if i > 0 and i % 3 == 0:
             print(f"       ... resfriando, potência atual: {current_w:.3f} W (alvo: < {p_idle_pre * 1.05:.3f} W)")
 
     p_idle_post, _ = measure_baseline(rapl, nvml, duration_s=10)
@@ -309,5 +318,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Executa o experimento E2 (Fronteira de Pareto Energia vs Acurácia)")
     parser.add_argument("--runs", type=int, default=30, help="Número de repetições por modo (padrão: 30)")
     args = parser.parse_args()
+    
+    # Kaggle and multiprocessing setup for Linux/Windows compatibility
+    multiprocessing.set_start_method('spawn', force=True)
     
     run_experiment_e2(num_runs=args.runs)
