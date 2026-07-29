@@ -45,6 +45,8 @@ class NVMLSensor:
     def __init__(self):
         self.available = False
         try:
+            import warnings
+            warnings.filterwarnings('ignore', category=FutureWarning)
             import pynvml
             pynvml.nvmlInit()
             self.handle = pynvml.nvmlDeviceGetHandleByIndex(0)
@@ -181,14 +183,23 @@ def run_experiment_e1(num_runs: int = 30) -> Dict[str, Any]:
         t1_rapl = rapl.read_uj()
 
         dt = t1_time - t0_time
+        joules_cpu = 0.0
+        joules_gpu = 0.0
+
         if rapl.available and dt > 0:
-            total_joules = (t1_rapl - t0_rapl) / 1e6
-        else:
+            joules_cpu = (t1_rapl - t0_rapl) / 1e6
+
+        if nvml.available and dt > 0:
+            gpu_mW = nvml.read_mW()
+            joules_gpu = (gpu_mW / 1000.0) * dt
+
+        if not rapl.available and not nvml.available:
             raise RuntimeError(
-                "ERRO METODOLÓGICO: Leitura do sensor RAPL indisponível durante a execução. "
+                "ERRO METODOLÓGICO: Nenhum sensor de energia físico (RAPL ou NVML) disponível no sistema. "
                 "Para garantir o rigor científico (Seção 0 da SPEC GT-M), o teste não pode utilizar fallbacks sintéticos."
             )
 
+        total_joules = joules_cpu + joules_gpu
         info["total_joules_gross"] = total_joules
         info["delta_joules_net"] = max(0.0, total_joules - (p_idle_pre * dt))
         runs_data.append(info)
