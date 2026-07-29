@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-SPEC GT-M — Experimento E3: Custo Energético da Deriva e Amortização por Recalibração
+SPEC GT-M — Experimento E3 (FIX v1.0): Custo Energético da Deriva e Amortização por Recalibração
 ==============================================================================
-Este script executa a medição física empírica (NVIDIA Tesla T4) de consumo energético
-sob diferentes tamanhos de prompt (128, 512, 1024 tokens) e temperaturas (0.0, 0.7, 1.0),
-combinada com a simulação matemática da energia amortizada por recalibração periódica,
-conforme pré-registrado em docs/experiments/E3_Custo_Deriva/preregistration.md.
+Implementação estritamente em conformidade com SPEC GTM-E3-FIX:
+1. Calibração dinâmica de iterações por condição (piso de tempo MIN_DURATION_S = 0.35s).
+2. Remoção total do clamp silencioso max(0.0, ...) com rejeição explícita e contagem de invalid_samples.
+3. Desacoplamento estrito entre Tamanho de Prompt (seq_len) e Temperatura (temp) em duas sub-séries.
 
 Uso:
   python3 docs/experiments/E3_Custo_Deriva/e3_drift_cost_collector.py --runs 30
@@ -21,7 +21,9 @@ import math
 import multiprocessing
 from typing import Dict, List, Any, Tuple
 
-# Reuso dos Sensores e Coletor Contínuo validados em E1 e E2
+MIN_DURATION_S = 0.35   # Piso de duração: garante >= ~35 amostras a 10ms
+MIN_SAMPLES    = 25     # Número mínimo de amostras aceitas do sampler NVML
+
 class NVMLSensor:
     """Leitor de potência de GPU via pynvml / nvidia-smi."""
     def __init__(self):
@@ -82,19 +84,20 @@ class ContinuousNVMLSampler:
         self.thread = threading.Thread(target=self._sample_loop, daemon=True)
         self.thread.start()
 
-    def stop_and_integrate(self) -> float:
+    def stop_and_integrate(self) -> Tuple[float, int]:
         self.running = False
         if self.thread:
             self.thread.join(timeout=1.0)
-        if len(self.samples) < 2:
-            return 0.0
+        n_samples = len(self.samples)
+        if n_samples < 2:
+            return 0.0, n_samples
         joules = 0.0
-        for i in range(len(self.samples) - 1):
+        for i in range(n_samples - 1):
             t1, p1 = self.samples[i]
             t2, p2 = self.samples[i+1]
             dt = t2 - t1
             joules += ((p1 + p2) / 2.0) * dt
-        return joules
+        return joules, n_samples
 
 class PromptSensitivityBenchmark:
     """Harness de teste para variação de tamanho de prompt e temperatura no PyTorch/CUDA."""
@@ -108,18 +111,15 @@ class PromptSensitivityBenchmark:
                 self.has_cuda = True
                 self.torch = torch
                 dim = 2048
-                # Simula matriz de entrada escalada pelo tamanho do prompt
                 self.prompt = torch.randn(seq_len, dim, device="cuda", dtype=torch.float16)
                 self.weights = torch.randn(dim, dim, device="cuda", dtype=torch.float16)
         except Exception:
             self.has_cuda = False
 
-    def run_inference_item(self, item_id: int) -> float:
-        """Executa a simulação da fase de Prefill + Gen sob a configuração de prompt/temp."""
+    def run_inference_item(self, item_id: int, loops: int = 100) -> float:
+        """Executa a inferência pelo número exato de iterações calibradas para a condição."""
         if self.has_cuda:
-            # Escala de carga suficiente para amostragem contínua NVML (10ms) sem aliasing de amostragem
-            base_loops = 600
-            for _ in range(base_loops):
+            for _ in range(loops):
                 out = self.torch.matmul(self.prompt, self.weights)
                 if self.temperature > 0.0:
                     out = out / max(0.1, self.temperature)
@@ -127,9 +127,25 @@ class PromptSensitivityBenchmark:
             self.torch.cuda.synchronize()
         else:
             acc = 0
-            for i in range(1000000 * (self.seq_len // 128)):
+            for i in range(10000 * loops):
                 acc += i * 0.0001
         return 1.0
+
+def calibrate_loop_count(bench: PromptSensitivityBenchmark, target_duration_s: float = MIN_DURATION_S) -> int:
+    """
+    SPEC GTM-E3-FIX Seção 3.1:
+    Determina dinamicamente o número de iterações para a condição específica atingir o piso de tempo.
+    """
+    probe_loops = 50
+    t0 = time.time()
+    for _ in range(probe_loops):
+        bench.run_inference_item(-1, loops=1)
+    elapsed = time.time() - t0
+    if elapsed <= 0:
+        raise RuntimeError("ERRO METODOLÓGICO: Probe de calibração retornou duração <= 0.")
+    per_loop = elapsed / probe_loops
+    required_loops = max(probe_loops, math.ceil(target_duration_s / per_loop))
+    return required_loops
 
 def measure_baseline(rapl: RAPLSensor, nvml: NVMLSensor, duration_s: int = 10) -> Tuple[float, float]:
     print(f"[*] Coletando baseline ocioso ({duration_s}s)...")
@@ -158,50 +174,79 @@ def measure_baseline(rapl: RAPLSensor, nvml: NVMLSensor, duration_s: int = 10) -
 
 def worker_inference(seq_len: int, temp: float, num_runs: int, p_idle_pre: float, queue: multiprocessing.Queue):
     """
-    Executado em sub-processo para garantir isolamento de contexto CUDA e retorno automático ao P8.
+    Worker executado num sub-processo isolado conforme SPEC GTM-E3-FIX:
+    - Calibra iterações dinamicamente.
+    - Elimina clamp silencioso `max(0.0, ...)`.
+    - Registra amostragem insuficiente e repetições inválidas.
     """
     try:
         nvml = NVMLSensor()
         bench = PromptSensitivityBenchmark(seq_len=seq_len, temperature=temp)
         
-        # Warmup térmico C2 (15s por condição)
+        # 1. Calibração de duração dinâmica por condição (SPEC GTM-E3-FIX 3.1)
+        required_loops = calibrate_loop_count(bench, target_duration_s=MIN_DURATION_S)
+        
+        # 2. Warmup térmico C2
         t_w = time.time()
         while time.time() - t_w < 15:
-            bench.run_inference_item(-1)
+            bench.run_inference_item(-1, loops=required_loops)
 
         runs_joules = []
+        sample_counts = []
+        invalid_samples = 0
+        rejection_reasons = []
+
         for r in range(num_runs):
             t0 = time.time()
             sampler = ContinuousNVMLSampler(nvml) if nvml.available else None
             if sampler:
                 sampler.start()
 
-            bench.run_inference_item(r)
+            bench.run_inference_item(r, loops=required_loops)
 
-            j_gpu = sampler.stop_and_integrate() if sampler else 0.0
+            j_gross, n_samples = sampler.stop_and_integrate() if sampler else (0.0, 0)
             dt = time.time() - t0
-            
-            j_net = max(0.0, j_gpu - (p_idle_pre * dt))
-            runs_joules.append(j_net)
+            j_floor = p_idle_pre * dt
 
-        queue.put({"status": "ok", "runs_joules": runs_joules})
+            # SPEC GTM-E3-FIX Seção 3.2: Sem clamp silencioso
+            if j_gross < j_floor:
+                invalid_samples += 1
+                rejection_reasons.append(f"Run {r}: j_gross ({j_gross:.4f}J) < j_floor ({j_floor:.4f}J)")
+            elif n_samples < MIN_SAMPLES:
+                invalid_samples += 1
+                rejection_reasons.append(f"Run {r}: n_samples ({n_samples}) < MIN_SAMPLES ({MIN_SAMPLES})")
+            else:
+                j_net = j_gross - j_floor
+                runs_joules.append(j_net)
+                sample_counts.append(n_samples)
+
+        invalid_ratio = invalid_samples / float(num_runs)
+        is_instrumentation_failure = invalid_ratio > 0.20
+
+        queue.put({
+            "status": "ok",
+            "required_loops": required_loops,
+            "runs_joules": runs_joules,
+            "sample_counts": sample_counts,
+            "invalid_samples": invalid_samples,
+            "invalid_ratio": invalid_ratio,
+            "instrumentation_failure": is_instrumentation_failure,
+            "rejection_reasons": rejection_reasons
+        })
     except Exception as e:
         queue.put({"status": "error", "error": str(e)})
 
-def compute_amortized_drift_cost(e_base_joules: float, nu: float = 0.02, t_lifetime_hours: float = 1000.0) -> Dict[str, Any]:
+def compute_amortized_drift_cost(e_base_joules: float, nu: float = 0.02) -> Dict[str, Any]:
     """
     Simulação matemática da retenção de pesos e custo de recalibração temporal (Seção 3 do SPEC).
-    Fórmula de Deriva: w(t) = w0 * (t / t0)^(-nu)
     """
-    num_inferences_total = 100000  # 100k inferências na vida útil
-    e_recalibration_joules = e_base_joules * 50.0  # Recalibração custa equivalente a 50 inferências
-    
-    # Frequência de recalibração necessária para manter a retenção acima do limiar
+    num_inferences_total = 100000
+    e_recalibration_joules = e_base_joules * 50.0
     recalibrations_needed = math.ceil(10.0 * (nu / 0.02))
     
     total_recal_energy = recalibrations_needed * e_recalibration_joules
     e_amortized = e_base_joules + (total_recal_energy / num_inferences_total)
-    overhead_pct = ((e_amortized - e_base_joules) / e_base_joules) * 100.0
+    overhead_pct = ((e_amortized - e_base_joules) / e_base_joules) * 100.0 if e_base_joules > 0 else 0.0
 
     return {
         "drift_parameter_nu": nu,
@@ -216,7 +261,7 @@ def compute_amortized_drift_cost(e_base_joules: float, nu: float = 0.02, t_lifet
 
 def run_experiment_e3(num_runs: int = 30) -> Dict[str, Any]:
     print("=================================================================")
-    print("      INICIANDO EXPERIMENTO E3 (GT-M): CUSTO DE DERIVA E PROMPTS ")
+    print("      INICIANDO EXPERIMENTO E3 (GT-M FIX v1.0): CUSTO DE DERIVA  ")
     print("=================================================================")
 
     rapl = RAPLSensor()
@@ -225,17 +270,28 @@ def run_experiment_e3(num_runs: int = 30) -> Dict[str, Any]:
     p_idle_pre, _ = measure_baseline(rapl, nvml, duration_s=10)
     print(f"[C1] Baseline Pré-Coleta (Estado Real Ocioso P8): {p_idle_pre:.3f} W")
 
-    conditions = [
-        {"name": "Prompt_Short_128t_T0.0", "seq_len": 128, "temp": 0.0},
-        {"name": "Prompt_Med_512t_T0.7", "seq_len": 512, "temp": 0.7},
-        {"name": "Prompt_Long_1024t_T1.0", "seq_len": 1024, "temp": 1.0},
+    # SPEC GTM-E3-FIX Seção 3.3: Desacoplamento de seq_len e temperature
+    TEMP_FIXED = 0.7
+    LENGTH_FIXED = 512
+
+    length_conditions = [
+        {"name": "Length_128t_TempFixed0.7",  "seq_len": 128,  "temp": TEMP_FIXED},
+        {"name": "Length_512t_TempFixed0.7",  "seq_len": 512,  "temp": TEMP_FIXED},
+        {"name": "Length_1024t_TempFixed0.7", "seq_len": 1024, "temp": TEMP_FIXED},
     ]
 
+    temperature_conditions = [
+        {"name": "Temp_0.0_LengthFixed512t", "seq_len": LENGTH_FIXED, "temp": 0.0},
+        {"name": "Temp_0.7_LengthFixed512t", "seq_len": LENGTH_FIXED, "temp": 0.7},
+        {"name": "Temp_1.0_LengthFixed512t", "seq_len": LENGTH_FIXED, "temp": 1.0},
+    ]
+
+    all_conditions = length_conditions + temperature_conditions
     empirical_results = {}
 
-    for cond in conditions:
+    for cond in all_conditions:
         c_name = cond["name"]
-        print(f"\n[*] Testando Condição Empírica: {c_name} ({num_runs} repetições)...")
+        print(f"\n[*] Testando Condição Empírica: {c_name} (seq_len={cond['seq_len']}, temp={cond['temp']})...")
         queue = multiprocessing.Queue()
         p = multiprocessing.Process(
             target=worker_inference, 
@@ -248,23 +304,42 @@ def run_experiment_e3(num_runs: int = 30) -> Dict[str, Any]:
             res = queue.get()
             if res["status"] != "ok":
                 raise RuntimeError(f"Erro no sub-processo ao testar {c_name}: {res['error']}")
-            runs_joules = res["runs_joules"]
         else:
             raise RuntimeError(f"Sub-processo falhou sem retornar dados para {c_name}.")
         
-        mean_j = statistics.mean(runs_joules)
-        std_j = statistics.stdev(runs_joules) if len(runs_joules) > 1 else 0.0
-        cv_j = std_j / mean_j if mean_j > 0 else 0.0
+        runs_joules = res["runs_joules"]
+        is_failure = res["instrumentation_failure"]
+
+        if len(runs_joules) > 1 and not is_failure:
+            mean_j = statistics.mean(runs_joules)
+            std_j = statistics.stdev(runs_joules)
+            cv_j = std_j / mean_j if mean_j > 0 else 0.0
+            mean_samples = statistics.mean(res["sample_counts"]) if res["sample_counts"] else 0
+            cv_pass = cv_j <= 0.15
+        else:
+            mean_j = 0.0
+            std_j = 0.0
+            cv_j = 999.0
+            mean_samples = 0
+            cv_pass = False
 
         empirical_results[c_name] = {
             "seq_len": cond["seq_len"],
             "temperature": cond["temp"],
+            "required_loops": res["required_loops"],
             "mean_net_joules": mean_j,
             "stdev_net_joules": std_j,
             "cv_ratio": cv_j,
-            "cv_pass": cv_j <= 0.15
+            "valid_runs": len(runs_joules),
+            "invalid_samples": res["invalid_samples"],
+            "invalid_ratio": res["invalid_ratio"],
+            "mean_samples_per_run": mean_samples,
+            "instrumentation_failure": is_failure,
+            "cv_pass": cv_pass
         }
-        print(f"    -> {c_name}: Energia = {mean_j:.4f} J (CV: {cv_j*100:.2f}%)")
+        
+        status_str = "FAIL ❌ (Falha de Instrumentação)" if is_failure else ("PASS ✅" if cv_pass else "FAIL ❌")
+        print(f"    -> {c_name}: {mean_j:.4f} J (CV: {cv_j*100:.2f}%, Amostras/run: {mean_samples:.1f}, Loops: {res['required_loops']}) -> {status_str}")
         print(f"    -> Contexto CUDA limpo pelo SO. Cooldown inter-condição (5s)...")
         time.sleep(5)
 
@@ -289,21 +364,24 @@ def run_experiment_e3(num_runs: int = 30) -> Dict[str, Any]:
     drift = abs(p_idle_post - p_idle_pre) / p_idle_pre if p_idle_pre > 0 else 0.0
 
     # Simulação da Custo Amortizado de Deriva baseada no modelo 512t
-    e_base_ref = empirical_results["Prompt_Med_512t_T0.7"]["mean_net_joules"]
+    ref_name = "Length_512t_TempFixed0.7"
+    e_base_ref = empirical_results[ref_name]["mean_net_joules"]
     simulation_results = compute_amortized_drift_cost(e_base_joules=e_base_ref)
 
-    cv_pass_all = all(r["cv_pass"] for r in empirical_results.values())
+    cv_pass_all = all(r["cv_pass"] and not r["instrumentation_failure"] for r in empirical_results.values())
     drift_pass = drift <= 0.05
     overall_pass = cv_pass_all and drift_pass
 
     report = {
         "experiment": "E3_Custo_Deriva_E_Sensibilidade_Prompt",
+        "spec_version": "SPEC GTM-E3-FIX v1.0",
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "num_runs_per_condition": num_runs,
         "baseline_pre_W": p_idle_pre,
         "baseline_post_W": p_idle_post,
         "baseline_drift_ratio": drift,
-        "empirical_results": empirical_results,
+        "length_sweep_results": {k: v for k, v in empirical_results.items() if k.startswith("Length_")},
+        "temperature_sweep_results": {k: v for k, v in empirical_results.items() if k.startswith("Temp_")},
         "simulation_drift_cost": simulation_results,
         "gates_status": {
             "G3.1_cv_pass_all_conditions": cv_pass_all,
@@ -319,17 +397,22 @@ def run_experiment_e3(num_runs: int = 30) -> Dict[str, Any]:
         json.dump(report, f, indent=2)
 
     print("\n=================================================================")
-    print("               RESULTADOS DO EXPERIMENTO E3                      ")
+    print("               RESULTADOS DO EXPERIMENTO E3 (FIX v1.0)           ")
     print("=================================================================")
-    print("--- [Parte A: Medição Empírica no Silício T4] ---")
-    for k, v in empirical_results.items():
-        print(f" [*] {k}: Energia = {v['mean_net_joules']:.4f} J (CV: {v['cv_ratio']*100:.2f}%)")
+    print("--- [Série 1: Variação de Tamanho de Prompt (Temp = 0.7 Fixo)] ---")
+    for k, v in report["length_sweep_results"].items():
+        print(f" [*] {k}: Energia = {v['mean_net_joules']:.4f} J (CV: {v['cv_ratio']*100:.2f}%, Amostras/run: {v['mean_samples_per_run']:.1f})")
+    
+    print("\n--- [Série 2: Variação de Temperatura (Prompt = 512t Fixo)] ---")
+    for k, v in report["temperature_sweep_results"].items():
+        print(f" [*] {k}: Energia = {v['mean_net_joules']:.4f} J (CV: {v['cv_ratio']*100:.2f}%, Amostras/run: {v['mean_samples_per_run']:.1f})")
+
     print("\n--- [Parte B: Simulação Matemática de Energia Amortizada] ---")
-    print(f" [*] Energia Base de Inferência: {simulation_results['e_base_inference_J']:.4f} J")
+    print(f" [*] Energia Base de Inferência (512t): {simulation_results['e_base_inference_J']:.4f} J")
     print(f" [*] Recalibrações Estimadas na Vida Útil: {simulation_results['recalibrations_needed']} eventos")
     print(f" [*] Energia Amortizada Real por Inferência: {simulation_results['e_amortized_inference_J']:.4f} J (+{simulation_results['amortized_overhead_pct']:.2f}% de custo de manutenção)")
 
-    print(f"\n [*] Status do Gate G3.1 (CV <= 15% em todas condições): {'PASS ✅' if cv_pass_all else 'FAIL ❌'}")
+    print(f"\n [*] Status do Gate G3.1 (CV <= 15% e sem falhas de instrumentação): {'PASS ✅' if cv_pass_all else 'FAIL ❌'}")
     print(f" [*] Status do Gate G3.2 (Deriva de Baseline <= 5%): {drift*100:.2f}% -> {'PASS ✅' if drift_pass else 'FAIL ❌'}")
     print(f" [*] GATE GERAL DO EXPERIMENTO E3: {'APROVADO [PASS]' if overall_pass else 'REPROVADO [FAIL]'}")
     print(f" [*] Artefato gravado em: {artifact_path}\n")
@@ -337,7 +420,7 @@ def run_experiment_e3(num_runs: int = 30) -> Dict[str, Any]:
     return report
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Executa o experimento E3 (Custo de Deriva e Sensibilidade a Prompt/Temp)")
+    parser = argparse.ArgumentParser(description="Executa o experimento E3 (FIX v1.0)")
     parser.add_argument("--runs", type=int, default=30, help="Número de repetições por condição (padrão: 30)")
     args = parser.parse_args()
     
