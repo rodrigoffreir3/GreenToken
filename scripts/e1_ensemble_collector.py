@@ -124,13 +124,19 @@ def measure_baseline(rapl: RAPLSensor, nvml: NVMLSensor, duration_s: int = 10) -
             d_uj = now_rapl - last_rapl
             watts_rapl = (d_uj / 1e6) / dt
         else:
-            # Fallback estimado para CPU em idel (~15W se sensor físico não estiver disponível)
-            watts_rapl = 15.0
+            watts_rapl = 0.0
 
         if nvml.available:
             watts_nvml = nvml.read_mW() / 1000.0
         else:
             watts_nvml = 0.0
+
+        if not rapl.available and not nvml.available:
+            raise RuntimeError(
+                "ERRO METODOLÓGICO CRÍTICO: Nenhum sensor físico de energia (RAPL ou NVML) está acessível no ambiente. "
+                "Para garantir o rigor científico (Seção 0 da SPEC GT-M), o teste NÃO pode utilizar fallbacks sintéticos. "
+                "Por favor, execute o script em um ambiente Linux/WSL2 com acesso a /sys/class/powercap/intel-rapl ou com GPU NVIDIA (NVML)."
+            )
 
         samples.append(watts_rapl + watts_nvml)
         last_rapl = now_rapl
@@ -178,8 +184,10 @@ def run_experiment_e1(num_runs: int = 30) -> Dict[str, Any]:
         if rapl.available and dt > 0:
             total_joules = (t1_rapl - t0_rapl) / 1e6
         else:
-            # Emulador de consumo proporcional à carga se RAPL for virtualizado no WSL2
-            total_joules = (p_idle_pre + 18.5) * dt  # +18.5W delta de carga
+            raise RuntimeError(
+                "ERRO METODOLÓGICO: Leitura do sensor RAPL indisponível durante a execução. "
+                "Para garantir o rigor científico (Seção 0 da SPEC GT-M), o teste não pode utilizar fallbacks sintéticos."
+            )
 
         info["total_joules_gross"] = total_joules
         info["delta_joules_net"] = max(0.0, total_joules - (p_idle_pre * dt))
