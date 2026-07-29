@@ -264,7 +264,7 @@ def run_experiment_e2(num_runs: int = 30) -> Dict[str, Any]:
     print("               RESULTADOS DA FRONTEIRA DE PARETO (E2)            ")
     print("=================================================================")
     for p in pareto_frontier:
-        print(f" [*] {p['mode']}: Acurácia = {p['accuracy']}%, Energia = {p['joules_per_inference']:.4f} J, Economia vs FP16 = {p['energy_saving_vs_fp16_pct']:.1f}%")
+        print(f" [*] {p['mode']}: Acurácia = {p['accuracy']}%, Energia = {p['joules_per_inference']:.4f} J, Economia vs FP32 = {p['energy_saving_vs_fp32_pct']:.1f}%")
     print(f" [*] GATE GERAL DO EXPERIMENTO E2: {'APROVADO [PASS]' if report['gates_status']['overall_E2_gate_passed'] else 'REPROVADO [FAIL]'}")
     print(f" [*] Artefato gravado em: {artifact_path}\n")
 
