@@ -234,7 +234,7 @@ def run_experiment_e2(num_runs: int = 30) -> Dict[str, Any]:
             pass
         time.sleep(5)  # Cooldown entre modos de precisão
 
-    print("[C1] Liberando recursos da GPU e aguardando 15s para retorno do baseline ocioso...")
+    print("[C1] Liberando recursos da GPU e aguardando resfriamento térmico (até 45s)...")
     try:
         import torch
         if torch.cuda.is_available():
@@ -243,7 +243,14 @@ def run_experiment_e2(num_runs: int = 30) -> Dict[str, Any]:
             torch.cuda.synchronize()
     except Exception:
         pass
-    time.sleep(15)  # Pause para retorno ao estado P8 ocioso
+    
+    # Smart cooldown: aguarda a potência cair para perto do p_idle_pre
+    for _ in range(15):
+        time.sleep(3)
+        current_w = (nvml.read_mW() / 1000.0) if nvml.available else 0.0
+        if current_w > 0 and abs(current_w - p_idle_pre) / p_idle_pre <= 0.03:
+            break
+
     p_idle_post, _ = measure_baseline(rapl, nvml, duration_s=10)
     drift = abs(p_idle_post - p_idle_pre) / p_idle_pre if p_idle_pre > 0 else 0.0
 
