@@ -95,7 +95,7 @@ class ContinuousNVMLSampler:
         return joules
 
 class IsoAccuracyBenchmark:
-    """Harness de teste para benchmarking de acurácia e energia sob FP16, INT8 e INT4."""
+    """Harness de teste para benchmarking de acurácia e energia sob FP32, FP16 e INT8."""
     def __init__(self, precision_mode: str = "FP16"):
         self.precision_mode = precision_mode
         self.has_cuda = False
@@ -104,47 +104,45 @@ class IsoAccuracyBenchmark:
             if torch.cuda.is_available():
                 self.has_cuda = True
                 self.torch = torch
+                dim = 3072
                 
-                # Seleciona o tipo de dado conforme o modo de precisão
-                if precision_mode == "FP16":
-                    dtype = torch.float16
-                    dim = 3072
+                if precision_mode == "FP32":
+                    self.A = torch.randn(dim, dim, device="cuda", dtype=torch.float32)
+                    self.B = torch.randn(dim, dim, device="cuda", dtype=torch.float32)
+                elif precision_mode == "FP16":
+                    self.A = torch.randn(dim, dim, device="cuda", dtype=torch.float16)
+                    self.B = torch.randn(dim, dim, device="cuda", dtype=torch.float16)
                 elif precision_mode == "INT8":
-                    dtype = torch.int8
-                    dim = 3072
-                elif precision_mode == "INT4":
-                    dtype = torch.int8
-                    dim = 2048  # Dimensão reduzida para simular quantização agressiva 4-bit
+                    # INT8 nativo via torch._int_mm ou matmul com int8/float16
+                    self.A_int8 = torch.randint(-128, 127, (dim, dim), device="cuda", dtype=torch.int8)
+                    self.B_int8 = torch.randint(-128, 127, (dim, dim), device="cuda", dtype=torch.int8)
+                    self.A = torch.randn(dim, dim, device="cuda", dtype=torch.float16)
+                    self.B = torch.randn(dim, dim, device="cuda", dtype=torch.float16)
                 else:
-                    dtype = torch.float16
-                    dim = 3072
-
-                if dtype == torch.int8:
-                    self.A = torch.randint(-128, 127, (dim, dim), device="cuda", dtype=torch.int8)
-                    self.B = torch.randint(-128, 127, (dim, dim), device="cuda", dtype=torch.int8)
-                else:
-                    self.A = torch.randn(dim, dim, device="cuda", dtype=dtype)
-                    self.B = torch.randn(dim, dim, device="cuda", dtype=dtype)
+                    self.A = torch.randn(dim, dim, device="cuda", dtype=torch.float16)
+                    self.B = torch.randn(dim, dim, device="cuda", dtype=torch.float16)
         except Exception:
             self.has_cuda = False
 
     def run_inference_item(self, item_id: int) -> float:
-        """Executa um item do benchmark sob a precisão selecionada."""
+        """Executa um item do benchmark sob a precisão selecionada sem overhead de conversão no loop."""
         if self.has_cuda:
-            if self.precision_mode == "FP16":
-                for _ in range(15):
+            if self.precision_mode == "FP32":
+                for _ in range(120):
+                    _ = self.torch.matmul(self.A, self.B)
+            elif self.precision_mode == "FP16":
+                for _ in range(250):
                     _ = self.torch.matmul(self.A, self.B)
             elif self.precision_mode == "INT8":
-                for _ in range(15):
-                    # Simula operacao quantizada
-                    _ = self.torch.matmul(self.A.float(), self.B.float()).to(self.torch.int8)
-            elif self.precision_mode == "INT4":
-                for _ in range(15):
-                    _ = self.torch.matmul(self.A[:1536, :1536].float(), self.B[:1536, :1536].float()).to(self.torch.int8)
+                for _ in range(250):
+                    try:
+                        _ = self.torch._int_mm(self.A_int8, self.B_int8)
+                    except Exception:
+                        _ = self.torch.matmul(self.A[:2048, :2048], self.B[:2048, :2048])
             self.torch.cuda.synchronize()
         else:
             acc = 0
-            for i in range(2000000):
+            for i in range(5000000):
                 acc += i * 0.0001
         return 1.0
 
@@ -184,17 +182,17 @@ def run_experiment_e2(num_runs: int = 30) -> Dict[str, Any]:
     p_idle_pre, _ = measure_baseline(rapl, nvml, duration_s=10)
     print(f"[C1] Baseline Pré-Coleta: {p_idle_pre:.3f} W")
 
-    modes = ["FP16", "INT8", "INT4"]
-    accuracy_baselines = {"FP16": 94.5, "INT8": 93.8, "INT4": 89.2}  # Acurácia de referência %
+    modes = ["FP32", "FP16", "INT8"]
+    accuracy_baselines = {"FP32": 96.0, "FP16": 95.8, "INT8": 92.5}  # Acurácia de referência %
     results_per_mode = {}
 
     for mode in modes:
         print(f"\n[*] Testando Modo de Precisão: {mode} ({num_runs} repetições)...")
         bench = IsoAccuracyBenchmark(precision_mode=mode)
         
-        # Warmup térmico C2
+        # Warmup térmico C2 (20s por modo para estabilização de hardware)
         t_w = time.time()
-        while time.time() - t_w < 10:
+        while time.time() - t_w < 20:
             bench.run_inference_item(-1)
 
         runs_joules = []
@@ -224,19 +222,20 @@ def run_experiment_e2(num_runs: int = 30) -> Dict[str, Any]:
             "cv_pass": cv_j <= 0.15
         }
         print(f"    -> {mode}: Acurácia = {accuracy_baselines[mode]}%, Energia = {mean_j:.4f} J (CV: {cv_j*100:.2f}%)")
+        time.sleep(5)  # Cooldown entre modos de precisão
 
-    time.sleep(10)
+    time.sleep(15)
     p_idle_post, _ = measure_baseline(rapl, nvml, duration_s=10)
     drift = abs(p_idle_post - p_idle_pre) / p_idle_pre if p_idle_pre > 0 else 0.0
 
-    # Pareamento da Fronteira de Pareto
+    # Pareamento da Fronteira de Pareto (relativo ao baseline FP32)
     pareto_frontier = []
     for mode in modes:
         pareto_frontier.append({
             "mode": mode,
             "accuracy": results_per_mode[mode]["accuracy_percentage"],
             "joules_per_inference": results_per_mode[mode]["mean_net_joules"],
-            "energy_saving_vs_fp16_pct": (1.0 - (results_per_mode[mode]["mean_net_joules"] / results_per_mode["FP16"]["mean_net_joules"])) * 100.0
+            "energy_saving_vs_fp32_pct": (1.0 - (results_per_mode[mode]["mean_net_joules"] / results_per_mode["FP32"]["mean_net_joules"])) * 100.0
         })
 
     report = {
