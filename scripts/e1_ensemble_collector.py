@@ -185,10 +185,10 @@ def run_experiment_e1(num_runs: int = 30) -> Dict[str, Any]:
     p_idle_pre, p_idle_pre_std = measure_baseline(rapl, nvml, duration_s=10)
     print(f"[C1] Baseline Pré-Coleta: {p_idle_pre:.3f} W ± {p_idle_pre_std:.3f} W")
 
-    # 2. Aquecimento Térmico (C2)
-    print("[C2] Executando aquecimento térmico prévio (10s)...")
+    # 2. Aquecimento Térmico (Controle C2 - Estabilização do Silício)
+    print("[C2] Executando aquecimento térmico prévio por 30s para estabilização de temperatura...")
     t_warm = time.time()
-    while time.time() - t_warm < 10:
+    while time.time() - t_warm < 30:
         engine.run_inference(-1)
 
     # 3. Série de N Execuções (C3)
@@ -229,7 +229,9 @@ def run_experiment_e1(num_runs: int = 30) -> Dict[str, Any]:
         if (i + 1) % 5 == 0 or (i + 1) == num_runs:
             print(f"    - Repetição {i+1}/{num_runs} concluída: {info['duration_s']*1000:.1f} ms, {total_joules:.3f} J")
 
-    # 4. Baseline Pós-Coleta (C1)
+    # 4. Estabilização pós-carga e Baseline Pós-Coleta (C1)
+    print("[C1] Aguardando 15s para estabilização da GPU antes da medição do baseline pós-coleta...")
+    time.sleep(15)
     p_idle_post, p_idle_post_std = measure_baseline(rapl, nvml, duration_s=10)
     print(f"[C1] Baseline Pós-Coleta: {p_idle_post:.3f} W ± {p_idle_post_std:.3f} W")
 
