@@ -87,9 +87,9 @@ class MockEngineBenchmark:
         time.sleep(0.020)
         t_prefill_start = time.time()
         
-        # Fase 1: Prefill (Processamento de Prompt denso em GPU)
+        # Fase 1: Prefill (Processamento de Prompt denso em GPU - ~200ms de carga contínua)
         if self.has_cuda:
-            for _ in range(12):
+            for _ in range(300):
                 _ = self.torch.matmul(self.A, self.B)
             self.torch.cuda.synchronize()
         else:
@@ -99,13 +99,13 @@ class MockEngineBenchmark:
         
         t_prefill_end = time.time()
         
-        # Fase 2: Decode (Geração token a token em GPU)
+        # Fase 2: Decode (Geração de tokens em GPU - ~300ms de carga contínua)
         t_decode_start = t_prefill_end
         if self.has_cuda:
             for tok in range(20):
-                _ = self.torch.matmul(self.A[:1024, :1024], self.B[:1024, :1024])
+                for _ in range(15):
+                    _ = self.torch.matmul(self.A[:2048, :2048], self.B[:2048, :2048])
                 self.torch.cuda.synchronize()
-                time.sleep(0.010)
         else:
             for tok in range(20):
                 time.sleep(0.020)
