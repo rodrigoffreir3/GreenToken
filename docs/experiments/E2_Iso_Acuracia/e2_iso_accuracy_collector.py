@@ -254,14 +254,21 @@ def run_experiment_e2(num_runs: int = 30) -> Dict[str, Any]:
         time.sleep(5)  # Cooldown entre modos de precisão
 
     print("[C1] Aguardando resfriamento térmico final (até 3 min) para garantir o P-State Ocioso...")
+    consecutive_ok = 0
     for i in range(60):
         time.sleep(3)
         current_w = (nvml.read_mW() / 1000.0) if nvml.available else 0.0
-        if current_w > 0 and abs(current_w - p_idle_pre) / p_idle_pre <= 0.045:
-            print(f"    -> Estabilizado em {current_w:.3f} W após {i*3}s.")
-            break
+        diff_ratio = abs(current_w - p_idle_pre) / p_idle_pre if p_idle_pre > 0 else 0.0
+        if current_w > 0 and diff_ratio <= 0.025:
+            consecutive_ok += 1
+            if consecutive_ok >= 2:
+                print(f"    -> Estabilizado em {current_w:.3f} W após {i*3}s.")
+                break
+        else:
+            consecutive_ok = 0
+
         if i > 0 and i % 5 == 0:
-            print(f"       ... resfriando, potência atual: {current_w:.3f} W (alvo: < {p_idle_pre * 1.05:.3f} W)")
+            print(f"       ... resfriando, potência atual: {current_w:.3f} W (alvo: < {p_idle_pre * 1.025:.3f} W)")
 
     p_idle_post, _ = measure_baseline(rapl, nvml, duration_s=10)
     drift = abs(p_idle_post - p_idle_pre) / p_idle_pre if p_idle_pre > 0 else 0.0
