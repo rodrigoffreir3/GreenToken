@@ -170,6 +170,42 @@ def measure_baseline(rapl: RAPLSensor, nvml: NVMLSensor, duration_s: int = 10) -
     stdev_power = statistics.stdev(samples) if len(samples) > 1 else 0.0
     return mean_power, stdev_power
 
+class ContinuousNVMLSampler:
+    """Amostrador contínuo de potência NVML em alta frequência (10ms) com integração trapezoidal."""
+    def __init__(self, nvml_sensor: NVMLSensor):
+        self.nvml = nvml_sensor
+        self.samples = []
+        self.running = False
+        self.thread = None
+
+    def _sample_loop(self):
+        while self.running:
+            now = time.time()
+            mw = self.nvml.read_mW()
+            self.samples.append((now, mw / 1000.0))
+            time.sleep(0.010)  # amostragem a cada 10ms
+
+    def start(self):
+        self.samples = []
+        self.running = True
+        import threading
+        self.thread = threading.Thread(target=self._sample_loop, daemon=True)
+        self.thread.start()
+
+    def stop_and_integrate(self) -> float:
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=1.0)
+        if len(self.samples) < 2:
+            return 0.0
+        joules = 0.0
+        for i in range(len(self.samples) - 1):
+            t1, p1 = self.samples[i]
+            t2, p2 = self.samples[i+1]
+            dt = t2 - t1
+            joules += ((p1 + p2) / 2.0) * dt
+        return joules
+
 def run_experiment_e1(num_runs: int = 30) -> Dict[str, Any]:
     print("=================================================================")
     print("      INICIANDO EXPERIMENTO E1 (GT-M): RECONSTRUÇÃO POR ENSEMBLE  ")
@@ -199,21 +235,22 @@ def run_experiment_e1(num_runs: int = 30) -> Dict[str, Any]:
         t0_rapl = rapl.read_uj()
         t0_time = time.time()
         
+        gpu_sampler = ContinuousNVMLSampler(nvml) if nvml.available else None
+        if gpu_sampler:
+            gpu_sampler.start()
+
         info = engine.run_inference(i + 1)
         
+        joules_gpu = gpu_sampler.stop_and_integrate() if gpu_sampler else 0.0
+
         t1_time = time.time()
         t1_rapl = rapl.read_uj()
 
         dt = t1_time - t0_time
         joules_cpu = 0.0
-        joules_gpu = 0.0
 
         if rapl.available and dt > 0:
             joules_cpu = (t1_rapl - t0_rapl) / 1e6
-
-        if nvml.available and dt > 0:
-            gpu_mW = nvml.read_mW()
-            joules_gpu = (gpu_mW / 1000.0) * dt
 
         if not rapl.available and not nvml.available:
             raise RuntimeError(
