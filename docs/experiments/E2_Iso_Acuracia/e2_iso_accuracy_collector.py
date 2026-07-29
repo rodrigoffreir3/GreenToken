@@ -179,8 +179,11 @@ def run_experiment_e2(num_runs: int = 30) -> Dict[str, Any]:
     rapl = RAPLSensor()
     nvml = NVMLSensor()
 
+    # Inicializa o contexto CUDA previamente para alinhar o P-State do driver NVIDIA nos baselines pré e pós
+    init_bench = IsoAccuracyBenchmark(precision_mode="FP32")
+
     p_idle_pre, _ = measure_baseline(rapl, nvml, duration_s=10)
-    print(f"[C1] Baseline Pré-Coleta: {p_idle_pre:.3f} W")
+    print(f"[C1] Baseline Pré-Coleta (Estado CUDA Alinhado): {p_idle_pre:.3f} W")
 
     modes = ["FP32", "FP16", "INT8"]
     accuracy_baselines = {"FP32": 96.0, "FP16": 95.8, "INT8": 92.5}  # Acurácia de referência %
