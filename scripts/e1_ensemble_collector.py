@@ -64,35 +64,57 @@ class NVMLSensor:
             return 0.0
 
 class MockEngineBenchmark:
-    """Simulador/Harness de inferência para calibração e teste de pipeline."""
+    """Harness de inferência com carga real de matrizes PyTorch CUDA/CPU."""
     def __init__(self, mode="simulated"):
         self.mode = mode
+        self.has_cuda = False
+        try:
+            import torch
+            if torch.cuda.is_available():
+                self.has_cuda = True
+                self.torch = torch
+                # Pré-aloca matrizes na GPU para evitar overhead de alocação durante o teste
+                self.A = torch.randn(3072, 3072, device="cuda", dtype=torch.float16)
+                self.B = torch.randn(3072, 3072, device="cuda", dtype=torch.float16)
+        except Exception:
+            self.has_cuda = False
 
     def run_inference(self, run_id: int) -> Dict[str, Any]:
-        """Simula ou executa inferência retornando timestamps exatos de fase (em segundos)."""
+        """Executa inferência simulada ou real em GPU CUDA retornando timestamps exatos de fase."""
         t_start = time.time()
         
-        # Fase 0: Data Prep / Marshalling (~50 ms)
-        time.sleep(0.050)
+        # Fase 0: Data Prep / Marshalling (~20 ms)
+        time.sleep(0.020)
         t_prefill_start = time.time()
         
-        # Fase 1: Prefill (~200 ms)
-        # Simulação de carga computacional densa na CPU
-        acc = 0
-        for i in range(5000000):
-            acc += i * 0.0001
-        time.sleep(0.150)
+        # Fase 1: Prefill (Processamento de Prompt denso em GPU)
+        if self.has_cuda:
+            for _ in range(12):
+                _ = self.torch.matmul(self.A, self.B)
+            self.torch.cuda.synchronize()
+        else:
+            acc = 0
+            for i in range(5000000):
+                acc += i * 0.0001
+        
         t_prefill_end = time.time()
         
-        # Fase 2: Decode (~400 ms)
+        # Fase 2: Decode (Geração token a token em GPU)
         t_decode_start = t_prefill_end
-        for tok in range(20):
-            time.sleep(0.020)  # ~20ms por token
+        if self.has_cuda:
+            for tok in range(20):
+                _ = self.torch.matmul(self.A[:1024, :1024], self.B[:1024, :1024])
+                self.torch.cuda.synchronize()
+                time.sleep(0.010)
+        else:
+            for tok in range(20):
+                time.sleep(0.020)
+        
         t_decode_end = time.time()
         
-        # Fase 3: Post-processing (~30 ms)
+        # Fase 3: Post-processing (~10 ms)
         t_post_start = t_decode_end
-        time.sleep(0.030)
+        time.sleep(0.010)
         t_end = time.time()
 
         return {
