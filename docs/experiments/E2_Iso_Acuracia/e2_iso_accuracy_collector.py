@@ -224,7 +224,7 @@ def run_experiment_e2(num_runs: int = 30) -> Dict[str, Any]:
         print(f"    -> {mode}: Acurácia = {accuracy_baselines[mode]}%, Energia = {mean_j:.4f} J (CV: {cv_j*100:.2f}%)")
         time.sleep(5)  # Cooldown entre modos de precisão
 
-    time.sleep(15)
+    time.sleep(25)  # Pause de 25s para estabilização de temperatura pós-carga pesada
     p_idle_post, _ = measure_baseline(rapl, nvml, duration_s=10)
     drift = abs(p_idle_post - p_idle_pre) / p_idle_pre if p_idle_pre > 0 else 0.0
 
@@ -238,6 +238,10 @@ def run_experiment_e2(num_runs: int = 30) -> Dict[str, Any]:
             "energy_saving_vs_fp32_pct": (1.0 - (results_per_mode[mode]["mean_net_joules"] / results_per_mode["FP32"]["mean_net_joules"])) * 100.0
         })
 
+    cv_pass_all = all(r["cv_pass"] for r in results_per_mode.values())
+    drift_pass = drift <= 0.05
+    overall_pass = cv_pass_all and drift_pass
+
     report = {
         "experiment": "E2_Energia_Iso_Acuracia",
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -249,9 +253,9 @@ def run_experiment_e2(num_runs: int = 30) -> Dict[str, Any]:
         "pareto_frontier": pareto_frontier,
         "gates_status": {
             "G2.1_pareto_reproducible": True,
-            "G2.2_cv_pass_all_modes": all(r["cv_pass"] for r in results_per_mode.values()),
-            "G2.3_baseline_drift_pass": drift <= 0.05,
-            "overall_E2_gate_passed": drift <= 0.05 and all(r["cv_pass"] for r in results_per_mode.values())
+            "G2.2_cv_pass_all_modes": cv_pass_all,
+            "G2.3_baseline_drift_pass": drift_pass,
+            "overall_E2_gate_passed": overall_pass
         }
     }
 
@@ -265,7 +269,9 @@ def run_experiment_e2(num_runs: int = 30) -> Dict[str, Any]:
     print("=================================================================")
     for p in pareto_frontier:
         print(f" [*] {p['mode']}: Acurácia = {p['accuracy']}%, Energia = {p['joules_per_inference']:.4f} J, Economia vs FP32 = {p['energy_saving_vs_fp32_pct']:.1f}%")
-    print(f" [*] GATE GERAL DO EXPERIMENTO E2: {'APROVADO [PASS]' if report['gates_status']['overall_E2_gate_passed'] else 'REPROVADO [FAIL]'}")
+    print(f"\n [*] Status do Gate G2.2 (CV <= 15% em todos os modos): {'PASS ✅' if cv_pass_all else 'FAIL ❌'}")
+    print(f" [*] Status do Gate G2.3 (Deriva de Baseline <= 5%): {drift*100:.2f}% -> {'PASS ✅' if drift_pass else 'FAIL ❌'}")
+    print(f" [*] GATE GERAL DO EXPERIMENTO E2: {'APROVADO [PASS]' if overall_pass else 'REPROVADO [FAIL]'}")
     print(f" [*] Artefato gravado em: {artifact_path}\n")
 
     return report
