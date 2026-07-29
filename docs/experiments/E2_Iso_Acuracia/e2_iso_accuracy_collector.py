@@ -222,9 +222,25 @@ def run_experiment_e2(num_runs: int = 30) -> Dict[str, Any]:
             "cv_pass": cv_j <= 0.15
         }
         print(f"    -> {mode}: Acurácia = {accuracy_baselines[mode]}%, Energia = {mean_j:.4f} J (CV: {cv_j*100:.2f}%)")
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+        except Exception:
+            pass
         time.sleep(5)  # Cooldown entre modos de precisão
 
-    time.sleep(25)  # Pause de 25s para estabilização de temperatura pós-carga pesada
+    print("[C1] Liberando recursos da GPU e aguardando 15s para retorno do baseline ocioso...")
+    try:
+        import torch
+        if torch.cuda.is_available():
+            del bench
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    except Exception:
+        pass
+    time.sleep(15)  # Pause para retorno ao estado P8 ocioso
     p_idle_post, _ = measure_baseline(rapl, nvml, duration_s=10)
     drift = abs(p_idle_post - p_idle_pre) / p_idle_pre if p_idle_pre > 0 else 0.0
 
