@@ -117,9 +117,9 @@ class PromptSensitivityBenchmark:
     def run_inference_item(self, item_id: int) -> float:
         """Executa a simulação da fase de Prefill + Gen sob a configuração de prompt/temp."""
         if self.has_cuda:
-            # Prefill phase proporcional ao tamanho da sequência
-            iterations = max(10, int(self.seq_len / 4))
-            for _ in range(iterations):
+            # Escala de carga suficiente para amostragem contínua NVML (10ms) sem aliasing de amostragem
+            base_loops = 600
+            for _ in range(base_loops):
                 out = self.torch.matmul(self.prompt, self.weights)
                 if self.temperature > 0.0:
                     out = out / max(0.1, self.temperature)
