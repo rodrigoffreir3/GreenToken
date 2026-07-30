@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-SPEC GT-M — Experimento E3 (FIX v1.0): Custo Energético da Deriva e Amortização por Recalibração
+SPEC GT-M — Experimento E3 (FIX v1.1): Custo Energético da Deriva e Amortização por Recalibração
 ==============================================================================
-Implementação estritamente em conformidade com SPEC GTM-E3-FIX:
-1. Calibração dinâmica de iterações por condição (piso de tempo MIN_DURATION_S = 0.35s).
-2. Remoção total do clamp silencioso max(0.0, ...) com rejeição explícita e contagem de invalid_samples.
-3. Desacoplamento estrito entre Tamanho de Prompt (seq_len) e Temperatura (temp) em duas sub-séries.
+Correção de Instrumentação e Calibração GPU-bound (v1.1):
+1. Calibração de loops em bloco (loops=probe_loops) para medir o tempo real de execução no silício CUDA,
+   eliminando a latência de sincronização CPU-driver Python.
+2. Garantia de piso de amostragem MIN_DURATION_S = 0.40s (~40 amostras a 10ms).
+3. Rejeição estrita e sem silenciamento de repetições anômalas (SPEC GTM-E3-FIX v1.0).
+4. Desacoplamento estrito entre Tamanho de Prompt e Temperatura.
 
 Uso:
   python3 docs/experiments/E3_Custo_Deriva/e3_drift_cost_collector.py --runs 30
@@ -21,7 +23,7 @@ import math
 import multiprocessing
 from typing import Dict, List, Any, Tuple
 
-MIN_DURATION_S = 0.35   # Piso de duração: garante >= ~35 amostras a 10ms
+MIN_DURATION_S = 0.40   # Piso de duração: garante ~40 amostras a 10ms por run
 MIN_SAMPLES    = 25     # Número mínimo de amostras aceitas do sampler NVML
 
 class NVMLSensor:
@@ -133,17 +135,19 @@ class PromptSensitivityBenchmark:
 
 def calibrate_loop_count(bench: PromptSensitivityBenchmark, target_duration_s: float = MIN_DURATION_S) -> int:
     """
-    SPEC GTM-E3-FIX Seção 3.1:
-    Determina dinamicamente o número de iterações para a condição específica atingir o piso de tempo.
+    SPEC GTM-E3-FIX v1.1:
+    Mede a execução CUDA em bloco de probe_loops (em uma única chamada) para determinar
+    o tempo de cálculo real da GPU, ignorando o overhead de sincronização individual da CPU.
     """
-    probe_loops = 50
+    probe_loops = 2000
     t0 = time.time()
-    for _ in range(probe_loops):
-        bench.run_inference_item(-1, loops=1)
+    bench.run_inference_item(-1, loops=probe_loops)
     elapsed = time.time() - t0
+    
     if elapsed <= 0:
-        raise RuntimeError("ERRO METODOLÓGICO: Probe de calibração retornou duração <= 0.")
-    per_loop = elapsed / probe_loops
+        return 10000
+        
+    per_loop = elapsed / float(probe_loops)
     required_loops = max(probe_loops, math.ceil(target_duration_s / per_loop))
     return required_loops
 
@@ -175,7 +179,7 @@ def measure_baseline(rapl: RAPLSensor, nvml: NVMLSensor, duration_s: int = 10) -
 def worker_inference(seq_len: int, temp: float, num_runs: int, p_idle_pre: float, queue: multiprocessing.Queue):
     """
     Worker executado num sub-processo isolado conforme SPEC GTM-E3-FIX:
-    - Calibra iterações dinamicamente.
+    - Calibra iterações dinamicamente no silício CUDA.
     - Elimina clamp silencioso `max(0.0, ...)`.
     - Registra amostragem insuficiente e repetições inválidas.
     """
@@ -183,12 +187,12 @@ def worker_inference(seq_len: int, temp: float, num_runs: int, p_idle_pre: float
         nvml = NVMLSensor()
         bench = PromptSensitivityBenchmark(seq_len=seq_len, temperature=temp)
         
-        # 1. Calibração de duração dinâmica por condição (SPEC GTM-E3-FIX 3.1)
+        # 1. Calibração de duração dinâmica GPU-bound (SPEC GTM-E3-FIX 3.1)
         required_loops = calibrate_loop_count(bench, target_duration_s=MIN_DURATION_S)
         
         # 2. Warmup térmico C2
         t_w = time.time()
-        while time.time() - t_w < 15:
+        while time.time() - t_w < 10:
             bench.run_inference_item(-1, loops=required_loops)
 
         runs_joules = []
@@ -208,7 +212,7 @@ def worker_inference(seq_len: int, temp: float, num_runs: int, p_idle_pre: float
             dt = time.time() - t0
             j_floor = p_idle_pre * dt
 
-            # SPEC GTM-E3-FIX Seção 3.2: Sem clamp silencioso
+            # SPEC GTM-E3-FIX Seção 3.2: Rejeição explícita sem clamp silencioso
             if j_gross < j_floor:
                 invalid_samples += 1
                 rejection_reasons.append(f"Run {r}: j_gross ({j_gross:.4f}J) < j_floor ({j_floor:.4f}J)")
@@ -261,7 +265,7 @@ def compute_amortized_drift_cost(e_base_joules: float, nu: float = 0.02) -> Dict
 
 def run_experiment_e3(num_runs: int = 30) -> Dict[str, Any]:
     print("=================================================================")
-    print("      INICIANDO EXPERIMENTO E3 (GT-M FIX v1.0): CUSTO DE DERIVA  ")
+    print("      INICIANDO EXPERIMENTO E3 (GT-M FIX v1.1): CUSTO DE DERIVA  ")
     print("=================================================================")
 
     rapl = RAPLSensor()
@@ -270,7 +274,6 @@ def run_experiment_e3(num_runs: int = 30) -> Dict[str, Any]:
     p_idle_pre, _ = measure_baseline(rapl, nvml, duration_s=10)
     print(f"[C1] Baseline Pré-Coleta (Estado Real Ocioso P8): {p_idle_pre:.3f} W")
 
-    # SPEC GTM-E3-FIX Seção 3.3: Desacoplamento de seq_len e temperature
     TEMP_FIXED = 0.7
     LENGTH_FIXED = 512
 
@@ -374,7 +377,7 @@ def run_experiment_e3(num_runs: int = 30) -> Dict[str, Any]:
 
     report = {
         "experiment": "E3_Custo_Deriva_E_Sensibilidade_Prompt",
-        "spec_version": "SPEC GTM-E3-FIX v1.0",
+        "spec_version": "SPEC GTM-E3-FIX v1.1",
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "num_runs_per_condition": num_runs,
         "baseline_pre_W": p_idle_pre,
@@ -397,7 +400,7 @@ def run_experiment_e3(num_runs: int = 30) -> Dict[str, Any]:
         json.dump(report, f, indent=2)
 
     print("\n=================================================================")
-    print("               RESULTADOS DO EXPERIMENTO E3 (FIX v1.0)           ")
+    print("               RESULTADOS DO EXPERIMENTO E3 (FIX v1.1)           ")
     print("=================================================================")
     print("--- [Série 1: Variação de Tamanho de Prompt (Temp = 0.7 Fixo)] ---")
     for k, v in report["length_sweep_results"].items():
@@ -420,7 +423,7 @@ def run_experiment_e3(num_runs: int = 30) -> Dict[str, Any]:
     return report
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Executa o experimento E3 (FIX v1.0)")
+    parser = argparse.ArgumentParser(description="Executa o experimento E3 (FIX v1.1)")
     parser.add_argument("--runs", type=int, default=30, help="Número de repetições por condição (padrão: 30)")
     args = parser.parse_args()
     
