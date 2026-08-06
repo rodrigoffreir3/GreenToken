@@ -135,20 +135,26 @@ class PromptSensitivityBenchmark:
 
 def calibrate_loop_count(bench: PromptSensitivityBenchmark, target_duration_s: float = MIN_DURATION_S) -> int:
     """
-    SPEC GTM-E3-FIX v1.1:
-    Mede a execução CUDA em bloco de probe_loops (em uma única chamada) para determinar
-    o tempo de cálculo real da GPU, ignorando o overhead de sincronização individual da CPU.
+    SPEC GTM-E3-FIX v1.2:
+    Warmup CUDA para eliminar o overhead do primeiro kernel launch e escala min_loops
+    inversamente ao tamanho da sequência para evitar aliasing em prompts curtos (128t).
     """
+    # 1. Warmup prévio para estabilizar o pipeline CUDA
+    bench.run_inference_item(-1, loops=200)
+    
+    # 2. Probe em bloco
     probe_loops = 2000
     t0 = time.time()
     bench.run_inference_item(-1, loops=probe_loops)
     elapsed = time.time() - t0
     
+    min_loops = int(2000 * max(1.0, 512.0 / float(bench.seq_len)))
+    
     if elapsed <= 0:
-        return 10000
+        return min_loops
         
     per_loop = elapsed / float(probe_loops)
-    required_loops = max(probe_loops, math.ceil(target_duration_s / per_loop))
+    required_loops = max(min_loops, math.ceil(target_duration_s / per_loop))
     return required_loops
 
 def measure_baseline(rapl: RAPLSensor, nvml: NVMLSensor, duration_s: int = 10) -> Tuple[float, float]:
