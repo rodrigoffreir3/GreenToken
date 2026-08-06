@@ -267,8 +267,23 @@ def run_experiment_e1(num_runs: int = 30) -> Dict[str, Any]:
             print(f"    - Repetição {i+1}/{num_runs} concluída: {info['duration_s']*1000:.1f} ms, {total_joules:.3f} J")
 
     # 4. Estabilização pós-carga e Baseline Pós-Coleta (C1)
-    print("[C1] Aguardando 15s para estabilização da GPU antes da medição do baseline pós-coleta...")
-    time.sleep(15)
+    print("\n[C1] Aguardando resfriamento térmico final (até 5 min) para garantir o retorno ao P-State Ocioso...")
+    consecutive_ok = 0
+    for i in range(100):
+        time.sleep(3)
+        current_w = (nvml.read_mW() / 1000.0) if nvml.available else 0.0
+        diff_ratio = abs(current_w - p_idle_pre) / p_idle_pre if p_idle_pre > 0 else 0.0
+        if current_w > 0 and diff_ratio <= 0.025:
+            consecutive_ok += 1
+            if consecutive_ok >= 2:
+                print(f"    -> Estabilizado em {current_w:.3f} W após {i*3}s.")
+                break
+        else:
+            consecutive_ok = 0
+
+        if i > 0 and i % 5 == 0:
+            print(f"       ... resfriando, potência atual: {current_w:.3f} W (alvo: < {p_idle_pre * 1.025:.3f} W)")
+
     p_idle_post, p_idle_post_std = measure_baseline(rapl, nvml, duration_s=10)
     print(f"[C1] Baseline Pós-Coleta: {p_idle_post:.3f} W ± {p_idle_post_std:.3f} W")
 
@@ -326,8 +341,8 @@ def run_experiment_e1(num_runs: int = 30) -> Dict[str, Any]:
     }
 
     # Salvar artefato de dados brutos
-    os.makedirs("docs/artifacts", exist_ok=True)
-    artifact_path = "docs/artifacts/E1_raw_data.json"
+    os.makedirs("docs/experiments/E1_Decomposicao_Fase/artifacts", exist_ok=True)
+    artifact_path = "docs/experiments/E1_Decomposicao_Fase/artifacts/E1_raw_data.json"
     with open(artifact_path, "w") as f:
         json.dump({"report": report, "raw_runs": runs_data}, f, indent=2)
 
