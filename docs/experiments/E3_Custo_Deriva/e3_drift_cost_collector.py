@@ -246,17 +246,18 @@ def worker_inference(seq_len: int, temp: float, num_runs: int, p_idle_pre: float
     except Exception as e:
         queue.put({"status": "error", "error": str(e)})
 
-def compute_amortized_drift_cost(e_base_joules: float, nu: float = 0.02) -> Dict[str, Any]:
+def compute_amortized_drift_cost(e_base_joules_pass: float, nu: float = 0.02) -> Dict[str, Any]:
     """
     Simulação matemática da retenção de pesos e custo de recalibração temporal (Seção 3 do SPEC).
+    Usa a energia NORMALIZADA POR PASS (e_base_joules_pass) para garantir integridade física de unidade.
     """
     num_inferences_total = 100000
-    e_recalibration_joules = e_base_joules * 50.0
+    e_recalibration_joules = e_base_joules_pass * 50.0
     recalibrations_needed = math.ceil(10.0 * (nu / 0.02))
     
     total_recal_energy = recalibrations_needed * e_recalibration_joules
-    e_amortized = e_base_joules + (total_recal_energy / num_inferences_total)
-    overhead_pct = ((e_amortized - e_base_joules) / e_base_joules) * 100.0 if e_base_joules > 0 else 0.0
+    e_amortized = e_base_joules_pass + (total_recal_energy / num_inferences_total)
+    overhead_pct = ((e_amortized - e_base_joules_pass) / e_base_joules_pass) * 100.0 if e_base_joules_pass > 0 else 0.0
 
     return {
         "drift_parameter_nu": nu,
@@ -264,14 +265,14 @@ def compute_amortized_drift_cost(e_base_joules: float, nu: float = 0.02) -> Dict
         "recalibrations_needed": recalibrations_needed,
         "recalibration_cost_per_event_J": e_recalibration_joules,
         "total_recalibration_energy_J": total_recal_energy,
-        "e_base_inference_J": e_base_joules,
-        "e_amortized_inference_J": e_amortized,
+        "e_base_inference_pass_J": e_base_joules_pass,
+        "e_amortized_inference_pass_J": e_amortized,
         "amortized_overhead_pct": overhead_pct
     }
 
 def run_experiment_e3(num_runs: int = 30) -> Dict[str, Any]:
     print("=================================================================")
-    print("      INICIANDO EXPERIMENTO E3 (GT-M FIX v1.1): CUSTO DE DERIVA  ")
+    print("      INICIANDO EXPERIMENTO E3 (GT-M FIX v1.2): CUSTO DE DERIVA  ")
     print("=================================================================")
 
     rapl = RAPLSensor()
@@ -318,26 +319,30 @@ def run_experiment_e3(num_runs: int = 30) -> Dict[str, Any]:
         
         runs_joules = res["runs_joules"]
         is_failure = res["instrumentation_failure"]
+        req_loops = res["required_loops"]
 
         if len(runs_joules) > 1 and not is_failure:
-            mean_j = statistics.mean(runs_joules)
+            mean_j_block = statistics.mean(runs_joules)
             std_j = statistics.stdev(runs_joules)
-            cv_j = std_j / mean_j if mean_j > 0 else 0.0
+            cv_j = std_j / mean_j_block if mean_j_block > 0 else 0.0
             mean_samples = statistics.mean(res["sample_counts"]) if res["sample_counts"] else 0
             cv_pass = cv_j <= 0.15
+            joules_per_pass = mean_j_block / float(req_loops) if req_loops > 0 else 0.0
         else:
-            mean_j = 0.0
+            mean_j_block = 0.0
             std_j = 0.0
             cv_j = 999.0
             mean_samples = 0
             cv_pass = False
+            joules_per_pass = 0.0
 
         empirical_results[c_name] = {
             "seq_len": cond["seq_len"],
             "temperature": cond["temp"],
-            "required_loops": res["required_loops"],
-            "mean_net_joules": mean_j,
-            "stdev_net_joules": std_j,
+            "required_loops": req_loops,
+            "mean_net_joules_block": mean_j_block,
+            "joules_per_pass": joules_per_pass,
+            "stdev_net_joules_block": std_j,
             "cv_ratio": cv_j,
             "valid_runs": len(runs_joules),
             "invalid_samples": res["invalid_samples"],
@@ -348,7 +353,7 @@ def run_experiment_e3(num_runs: int = 30) -> Dict[str, Any]:
         }
         
         status_str = "FAIL ❌ (Falha de Instrumentação)" if is_failure else ("PASS ✅" if cv_pass else "FAIL ❌")
-        print(f"    -> {c_name}: {mean_j:.4f} J (CV: {cv_j*100:.2f}%, Amostras/run: {mean_samples:.1f}, Loops: {res['required_loops']}) -> {status_str}")
+        print(f"    -> {c_name}: {mean_j_block:.4f} J/bloco ({joules_per_pass:.6f} J/pass, CV: {cv_j*100:.2f}%, Loops: {req_loops}) -> {status_str}")
         print(f"    -> Contexto CUDA limpo pelo SO. Cooldown inter-condição (8s)...")
         time.sleep(8)
 
@@ -372,10 +377,10 @@ def run_experiment_e3(num_runs: int = 30) -> Dict[str, Any]:
     p_idle_post, _ = measure_baseline(rapl, nvml, duration_s=10)
     drift = abs(p_idle_post - p_idle_pre) / p_idle_pre if p_idle_pre > 0 else 0.0
 
-    # Simulação da Custo Amortizado de Deriva baseada no modelo 512t
+    # Simulação da Custo Amortizado de Deriva baseada no modelo 512t NORMALIZADO
     ref_name = "Length_512t_TempFixed0.7"
-    e_base_ref = empirical_results[ref_name]["mean_net_joules"]
-    simulation_results = compute_amortized_drift_cost(e_base_joules=e_base_ref)
+    e_base_pass_ref = empirical_results[ref_name]["joules_per_pass"]
+    simulation_results = compute_amortized_drift_cost(e_base_joules_pass=e_base_pass_ref)
 
     cv_pass_all = all(r["cv_pass"] and not r["instrumentation_failure"] for r in empirical_results.values())
     drift_pass = drift <= 0.05
@@ -383,7 +388,7 @@ def run_experiment_e3(num_runs: int = 30) -> Dict[str, Any]:
 
     report = {
         "experiment": "E3_Custo_Deriva_E_Sensibilidade_Prompt",
-        "spec_version": "SPEC GTM-E3-FIX v1.1",
+        "spec_version": "SPEC GTM-E3-FIX v1.2 (Normalized)",
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "num_runs_per_condition": num_runs,
         "baseline_pre_W": p_idle_pre,
@@ -406,20 +411,20 @@ def run_experiment_e3(num_runs: int = 30) -> Dict[str, Any]:
         json.dump(report, f, indent=2)
 
     print("\n=================================================================")
-    print("               RESULTADOS DO EXPERIMENTO E3 (FIX v1.1)           ")
+    print("               RESULTADOS DO EXPERIMENTO E3 (NORMALIZADO)        ")
     print("=================================================================")
     print("--- [Série 1: Variação de Tamanho de Prompt (Temp = 0.7 Fixo)] ---")
     for k, v in report["length_sweep_results"].items():
-        print(f" [*] {k}: Energia = {v['mean_net_joules']:.4f} J (CV: {v['cv_ratio']*100:.2f}%, Amostras/run: {v['mean_samples_per_run']:.1f})")
+        print(f" [*] {k}: Energia = {v['joules_per_pass']:.6f} J/pass (Bloco {v['required_loops']} loops: {v['mean_net_joules_block']:.4f} J, CV: {v['cv_ratio']*100:.2f}%)")
     
     print("\n--- [Série 2: Variação de Temperatura (Prompt = 512t Fixo)] ---")
     for k, v in report["temperature_sweep_results"].items():
-        print(f" [*] {k}: Energia = {v['mean_net_joules']:.4f} J (CV: {v['cv_ratio']*100:.2f}%, Amostras/run: {v['mean_samples_per_run']:.1f})")
+        print(f" [*] {k}: Energia = {v['joules_per_pass']:.6f} J/pass (Bloco {v['required_loops']} loops: {v['mean_net_joules_block']:.4f} J, CV: {v['cv_ratio']*100:.2f}%)")
 
-    print("\n--- [Parte B: Simulação Matemática de Energia Amortizada] ---")
-    print(f" [*] Energia Base de Inferência (512t): {simulation_results['e_base_inference_J']:.4f} J")
+    print("\n--- [Parte B: Simulação Matemática de Energia Amortizada (Normalizada)] ---")
+    print(f" [*] Energia Base por Inferência (512t Pass): {simulation_results['e_base_inference_pass_J']:.6f} J")
     print(f" [*] Recalibrações Estimadas na Vida Útil: {simulation_results['recalibrations_needed']} eventos")
-    print(f" [*] Energia Amortizada Real por Inferência: {simulation_results['e_amortized_inference_J']:.4f} J (+{simulation_results['amortized_overhead_pct']:.2f}% de custo de manutenção)")
+    print(f" [*] Energia Amortizada Real por Pass: {simulation_results['e_amortized_inference_pass_J']:.6f} J (+{simulation_results['amortized_overhead_pct']:.2f}% de custo de manutenção)")
 
     print(f"\n [*] Status do Gate G3.1 (CV <= 15% e sem falhas de instrumentação): {'PASS ✅' if cv_pass_all else 'FAIL ❌'}")
     print(f" [*] Status do Gate G3.2 (Deriva de Baseline <= 5%): {drift*100:.2f}% -> {'PASS ✅' if drift_pass else 'FAIL ❌'}")
