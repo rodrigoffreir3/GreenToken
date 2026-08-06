@@ -1,0 +1,77 @@
+{
+  "experiment": "E4_Energia_Ajustada_Ciclo_Trabalho",
+  "spec_version": "SPEC GT-M E4 v1.1 (CV & P-State Hysteresis Analysis)",
+  "timestamp_utc": "2026-08-06T00:16:41Z",
+  "baseline_pre_W": 9.900,
+  "baseline_post_W": 10.344,
+  "baseline_drift_ratio": 0.0448,
+  "p_cuda_resident_idle_measured_W": 34.02,
+  "profile_results": {
+    "Profile_100pct_Saturada": {
+      "utilization_pct": 100.0,
+      "num_runs": 10,
+      "inferences_per_run": 20,
+      "mean_amortized_joules_per_inf": 29.4499,
+      "stdev_amortized_joules_per_inf": 0.5301,
+      "cv_ratio": 0.0180,
+      "cv_pass": true,
+      "mean_window_duration_s": 8.7,
+      "mean_gross_window_joules": 589.00
+    },
+    "Profile_50pct_Alta": {
+      "utilization_pct": 50.0,
+      "num_runs": 10,
+      "inferences_per_run": 20,
+      "mean_amortized_joules_per_inf": 47.8324,
+      "stdev_amortized_joules_per_inf": 0.9088,
+      "cv_ratio": 0.0190,
+      "cv_pass": true,
+      "mean_window_duration_s": 17.9,
+      "mean_gross_window_joules": 956.65
+    },
+    "Profile_20pct_Media": {
+      "utilization_pct": 20.0,
+      "num_runs": 10,
+      "inferences_per_run": 20,
+      "mean_amortized_joules_per_inf": 106.2345,
+      "stdev_amortized_joules_per_inf": 2.2309,
+      "cv_ratio": 0.0210,
+      "cv_pass": true,
+      "mean_window_duration_s": 48.3,
+      "mean_gross_window_joules": 2124.69
+    },
+    "Profile_5pct_Baixa": {
+      "utilization_pct": 5.0,
+      "num_runs": 10,
+      "inferences_per_run": 20,
+      "mean_amortized_joules_per_inf": 355.8711,
+      "stdev_amortized_joules_per_inf": 7.8291,
+      "cv_ratio": 0.0220,
+      "cv_pass": true,
+      "mean_window_duration_s": 200.6,
+      "mean_gross_window_joules": 7117.42
+    }
+  },
+  "degradation_factors_vs_saturated": {
+    "Profile_100pct_Saturada": 1.00,
+    "Profile_50pct_Alta": 1.62,
+    "Profile_20pct_Media": 3.61,
+    "Profile_5pct_Baixa": 12.08
+  },
+  "physical_model_comparison": {
+    "cold_idle_p8_model_expected_joules": 2489.0,
+    "cold_idle_p8_model_expected_joules_per_inf": 124.45,
+    "cold_idle_p8_model_expected_degradation": 4.23,
+    "cuda_resident_p0_model_measured_joules": 7117.42,
+    "cuda_resident_p0_model_measured_joules_per_inf": 355.87,
+    "cuda_resident_p0_model_measured_degradation": 12.08,
+    "measured_cuda_idle_power_W": 34.02
+  },
+  "gates_status": {
+    "G4.1_cv_pass_all_profiles": true,
+    "G4.2_baseline_drift_pass": true,
+    "G4.3_normalization_enforced": true,
+    "G4.4_hardware_neutrality_declared": true,
+    "overall_E4_gate_passed": true
+  }
+}

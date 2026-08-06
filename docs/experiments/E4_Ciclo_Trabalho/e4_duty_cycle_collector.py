@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-SPEC GT-M — Experimento E4: Energia Ajustada por Ciclo de Trabalho (Duty Cycle Energy)
+SPEC GT-M — Experimento E4 (v1.1): Energia Ajustada por Ciclo de Trabalho com Dispersão CV
 ==============================================================================
-Este script executa a medição física empírica (NVIDIA Tesla T4) de consumo energético
-sob diferentes perfis de utilização em implantação realista (100%, 50%, 20%, 5%),
-conforme registrado em docs/experiments/E4_Ciclo_Trabalho/preregistration.md.
-
-Regra Inviolável (Gate G4.3): Normalização automática e obrigatória por inferência útil
-entregue (E_total / N_inferências), impedindo qualquer comparação bruta de janelas temporais
-com contagens de trabalho distintas.
+Refatoração de Rigor Científico (Conforme Auditoria Adversarial):
+1. Medição de N=10 repetições independentes por perfil de utilização (100%, 50%, 20%, 5%),
+   computando Média, Desvio Padrão e CV% para cada perfil (Validação Matemática do Gate G4.1).
+2. Trava de Normalização Automática (Gate G4.3): E_amortizada_por_inf = E_total_janela / N_inferências.
+3. Gravação completa do artefato bruto em docs/experiments/E4_Ciclo_Trabalho/artifacts/E4_raw_data.json.
+4. Modelagem e decomposição física de P-State Hysteresis (CUDA-Resident Idle 35.5W vs Cold P8 9.9W).
 
 Uso:
   python3 docs/experiments/E4_Ciclo_Trabalho/e4_duty_cycle_collector.py --runs 10
@@ -24,7 +23,6 @@ import math
 import multiprocessing
 from typing import Dict, List, Any, Tuple
 
-# Sensor NVML e RAPL
 class NVMLSensor:
     """Leitor de potência de GPU via pynvml / nvidia-smi."""
     def __init__(self):
@@ -85,20 +83,20 @@ class ContinuousNVMLSampler:
         self.thread = threading.Thread(target=self._sample_loop, daemon=True)
         self.thread.start()
 
-    def stop_and_integrate(self) -> Tuple[float, int]:
+    def stop_and_integrate(self) -> Tuple[float, int, List[Tuple[float, float]]]:
         self.running = False
         if self.thread:
             self.thread.join(timeout=1.0)
         n_samples = len(self.samples)
         if n_samples < 2:
-            return 0.0, n_samples
+            return 0.0, n_samples, self.samples
         joules = 0.0
         for i in range(n_samples - 1):
             t1, p1 = self.samples[i]
             t2, p2 = self.samples[i+1]
             dt = t2 - t1
             joules += ((p1 + p2) / 2.0) * dt
-        return joules, n_samples
+        return joules, n_samples, self.samples
 
 class DutyCycleBenchmark:
     """Harness de teste para carga de inferência PyTorch/CUDA."""
@@ -154,22 +152,20 @@ def measure_baseline(rapl: RAPLSensor, nvml: NVMLSensor, duration_s: int = 10) -
 
     return statistics.mean(samples), statistics.stdev(samples) if len(samples) > 1 else 0.0
 
-def worker_duty_cycle(utilization_pct: float, num_inferences: int, p_idle_pre: float, queue: multiprocessing.Queue):
+def worker_duty_cycle(utilization_pct: float, num_runs: int, inferences_per_run: int, p_idle_pre: float, queue: multiprocessing.Queue):
     """
-    Executa o perfil de ciclo de trabalho em sub-processo isolado:
-    100% utilisation: inferências contínuas.
-    50%, 20%, 5%: inferências intercaladas com pausas ociosas para atingir o Duty Cycle alvo.
+    Executa N repetições independentes da janela de ciclo de trabalho em sub-processo isolado,
+    retornando vetor de runs para cálculo rigoroso de Média, Desvio Padrão e CV% (Gate G4.1).
     """
     try:
         nvml = NVMLSensor()
         bench = DutyCycleBenchmark(seq_len=512)
         loops_per_inf = 2000
         
-        # Warmup inicial do CUDA
+        # Warmup inicial CUDA
         bench.run_inference_item(loops=200)
 
-        # Determina a pausa ociosa necessária por inferência para atingir a utilização desejada
-        # t_work ~ 0.35s para 2000 loops de 512t
+        # Mede tempo de trabalho ativo por inferência
         t0_probe = time.time()
         bench.run_inference_item(loops=loops_per_inf)
         t_work = time.time() - t0_probe
@@ -177,49 +173,58 @@ def worker_duty_cycle(utilization_pct: float, num_inferences: int, p_idle_pre: f
         if utilization_pct >= 99.0:
             t_idle_pause = 0.0
         else:
-            # utilization = t_work / (t_work + t_idle_pause) => t_idle_pause = t_work * (100 - util) / util
             t_idle_pause = t_work * ((100.0 - utilization_pct) / utilization_pct)
 
-        window_joules = []
-        inferences_delivered = num_inferences
+        runs_amortized_joules = []
+        runs_gross_joules = []
+        runs_window_durations = []
+        sample_counts = []
+        all_raw_samples = []
 
-        sampler = ContinuousNVMLSampler(nvml) if nvml.available else None
-        t_window_start = time.time()
-        if sampler:
-            sampler.start()
+        for r in range(num_runs):
+            sampler = ContinuousNVMLSampler(nvml) if nvml.available else None
+            t_window_start = time.time()
+            if sampler:
+                sampler.start()
 
-        for inf in range(num_inferences):
-            bench.run_inference_item(loops=loops_per_inf)
-            if t_idle_pause > 0:
-                time.sleep(t_idle_pause)
+            for inf in range(inferences_per_run):
+                bench.run_inference_item(loops=loops_per_inf)
+                if t_idle_pause > 0:
+                    time.sleep(t_idle_pause)
 
-        j_gross, n_samples = sampler.stop_and_integrate() if sampler else (0.0, 0)
-        dt_window = time.time() - t_window_start
+            j_gross, n_samples, raw_samples = sampler.stop_and_integrate() if sampler else (0.0, 0, [])
+            dt_window = time.time() - t_window_start
 
-        # Trava G4.3: Energia amortizada total por inferência útil
-        e_idle_window = p_idle_pre * dt_window
-        e_gross_amortized_per_inf = j_gross / float(inferences_delivered) if inferences_delivered > 0 else 0.0
-        e_net_active_per_inf = max(0.0, (j_gross - e_idle_window) / float(inferences_delivered))
+            # Trava G4.3: Divisão estrita por inferência útil
+            e_amortized_per_inf = j_gross / float(inferences_per_run) if inferences_per_run > 0 else 0.0
+
+            runs_amortized_joules.append(e_amortized_per_inf)
+            runs_gross_joules.append(j_gross)
+            runs_window_durations.append(dt_window)
+            sample_counts.append(n_samples)
+            all_raw_samples.append([(t - t_window_start, w) for t, w in raw_samples])
+
+            time.sleep(1.0) # Pequena pausa entre repetições do mesmo perfil
 
         queue.put({
             "status": "ok",
             "utilization_pct": utilization_pct,
-            "inferences_delivered": inferences_delivered,
+            "num_runs": num_runs,
+            "inferences_per_run": inferences_per_run,
             "t_work_per_inf_s": t_work,
             "t_idle_pause_per_inf_s": t_idle_pause,
-            "total_window_duration_s": dt_window,
-            "total_gross_joules": j_gross,
-            "idle_baseline_joules": e_idle_window,
-            "n_samples": n_samples,
-            "e_gross_amortized_per_inf_J": e_gross_amortized_per_inf,
-            "e_net_active_per_inf_J": e_net_active_per_inf
+            "runs_amortized_joules": runs_amortized_joules,
+            "runs_gross_joules": runs_gross_joules,
+            "runs_window_durations": runs_window_durations,
+            "sample_counts": sample_counts,
+            "all_raw_samples": all_raw_samples
         })
     except Exception as e:
         queue.put({"status": "error", "error": str(e)})
 
-def run_experiment_e4(num_runs_per_profile: int = 10) -> Dict[str, Any]:
+def run_experiment_e4(num_runs_per_profile: int = 10, inferences_per_run: int = 20) -> Dict[str, Any]:
     print("=================================================================")
-    print("      INICIANDO EXPERIMENTO E4 (GT-M): ENERGIA EM CICLO DE TRABALHO ")
+    print("      INICIANDO EXPERIMENTO E4 (GT-M v1.1): CICLO DE TRABALHO    ")
     print("=================================================================")
 
     rapl = RAPLSensor()
@@ -229,21 +234,21 @@ def run_experiment_e4(num_runs_per_profile: int = 10) -> Dict[str, Any]:
     print(f"[C1] Baseline Pré-Coleta (Estado Real Ocioso P8): {p_idle_pre:.3f} W")
 
     profiles = [
-        {"name": "Profile_100pct_Saturada", "utilization": 100.0, "inferences": 20},
-        {"name": "Profile_50pct_Alta",     "utilization": 50.0,  "inferences": 20},
-        {"name": "Profile_20pct_Media",    "utilization": 20.0,  "inferences": 20},
-        {"name": "Profile_5pct_Baixa",     "utilization": 5.0,   "inferences": 20},
+        {"name": "Profile_100pct_Saturada", "utilization": 100.0},
+        {"name": "Profile_50pct_Alta",     "utilization": 50.0},
+        {"name": "Profile_20pct_Media",    "utilization": 20.0},
+        {"name": "Profile_5pct_Baixa",     "utilization": 5.0},
     ]
 
     profile_results = {}
 
     for prof in profiles:
         p_name = prof["name"]
-        print(f"\n[*] Testando Perfil de Utilização: {p_name} ({prof['utilization']}% Carga)...")
+        print(f"\n[*] Testando Perfil de Utilização: {p_name} ({prof['utilization']}% Carga | {num_runs_per_profile} repetições)...")
         queue = multiprocessing.Queue()
         p = multiprocessing.Process(
             target=worker_duty_cycle, 
-            args=(prof["utilization"], prof["inferences"], p_idle_pre, queue)
+            args=(prof["utilization"], num_runs_per_profile, inferences_per_run, p_idle_pre, queue)
         )
         p.start()
         p.join()
@@ -255,8 +260,30 @@ def run_experiment_e4(num_runs_per_profile: int = 10) -> Dict[str, Any]:
         else:
             raise RuntimeError(f"Sub-processo falhou sem retornar dados para {p_name}.")
 
-        profile_results[p_name] = res
-        print(f"    -> {p_name}: {res['e_gross_amortized_per_inf_J']:.4f} J/inf útil (Janela total: {res['total_gross_joules']:.2f} J em {res['total_window_duration_s']:.1f}s)")
+        runs_j = res["runs_amortized_joules"]
+        mean_amortized_j = statistics.mean(runs_j)
+        stdev_amortized_j = statistics.stdev(runs_j) if len(runs_j) > 1 else 0.0
+        cv_ratio = stdev_amortized_j / mean_amortized_j if mean_amortized_j > 0 else 0.0
+        cv_pass = cv_ratio <= 0.15
+
+        mean_duration_s = statistics.mean(res["runs_window_durations"])
+        mean_gross_j = statistics.mean(res["runs_gross_joules"])
+
+        profile_results[p_name] = {
+            "utilization_pct": prof["utilization"],
+            "num_runs": num_runs_per_profile,
+            "inferences_per_run": inferences_per_run,
+            "mean_amortized_joules_per_inf": mean_amortized_j,
+            "stdev_amortized_joules_per_inf": stdev_amortized_j,
+            "cv_ratio": cv_ratio,
+            "cv_pass": cv_pass,
+            "mean_window_duration_s": mean_duration_s,
+            "mean_gross_window_joules": mean_gross_j,
+            "runs_amortized_joules": runs_j,
+            "raw_sample_traces": res["all_raw_samples"]
+        }
+
+        print(f"    -> {p_name}: {mean_amortized_j:.4f} J/inf útil (CV: {cv_ratio*100:.2f}%, Média Janela: {mean_gross_j:.2f} J em {mean_duration_s:.1f}s) -> {'PASS ✅' if cv_pass else 'FAIL ❌'}")
         print(f"    -> Contexto CUDA limpo pelo SO. Cooldown inter-perfil (8s)...")
         time.sleep(8)
 
@@ -280,28 +307,35 @@ def run_experiment_e4(num_runs_per_profile: int = 10) -> Dict[str, Any]:
     p_idle_post, _ = measure_baseline(rapl, nvml, duration_s=10)
     drift = abs(p_idle_post - p_idle_pre) / p_idle_pre if p_idle_pre > 0 else 0.0
 
-    # Validação Obrigatória de Normalização (Gate G4.3)
-    e_saturated = profile_results["Profile_100pct_Saturada"]["e_gross_amortized_per_inf_J"]
+    # Fatores de Degradação vs Saturada
+    e_saturated = profile_results["Profile_100pct_Saturada"]["mean_amortized_joules_per_inf"]
     degradation_factors = {}
     for p_name, res in profile_results.items():
-        e_amortized = res["e_gross_amortized_per_inf_J"]
-        ratio = e_amortized / e_saturated if e_saturated > 0 else 1.0
-        degradation_factors[p_name] = ratio
+        e_amort = res["mean_amortized_joules_per_inf"]
+        degradation_factors[p_name] = e_amort / e_saturated if e_saturated > 0 else 1.0
 
+    # Modelo Naive (Cold P8 Idle) vs Medido (CUDA-Resident P-State Hysteresis)
+    # Naive modelo: E_expected = E_active (589J) + P_idle_cold (9.9W) * t_idle
+    # 5% utilization: t_window ~ 200.6s, t_idle ~ 191.9s => E_expected = 589 + 9.9*191.9 = 2489J => 124.45 J/inf (4.23x)
+    # Medido: 7117.42J => 355.87 J/inf (12.08x) => P_idle_cuda = (7117.42 - 589) / 191.9 = 34.02 Watts (P0/P2 state)
+    p_cuda_resident_idle_measured = (profile_results["Profile_5pct_Baixa"]["mean_gross_window_joules"] - profile_results["Profile_100pct_Saturada"]["mean_gross_window_joules"]) / (profile_results["Profile_5pct_Baixa"]["mean_window_duration_s"] - profile_results["Profile_100pct_Saturada"]["mean_window_duration_s"]) if profile_results["Profile_5pct_Baixa"]["mean_window_duration_s"] > profile_results["Profile_100pct_Saturada"]["mean_window_duration_s"] else 0.0
+
+    cv_pass_all = all(r["cv_pass"] for r in profile_results.values())
     drift_pass = drift <= 0.05
-    overall_pass = drift_pass and all(r["e_gross_amortized_per_inf_J"] > 0 for r in profile_results.values())
+    overall_pass = cv_pass_all and drift_pass
 
     report = {
         "experiment": "E4_Energia_Ajustada_Ciclo_Trabalho",
-        "spec_version": "SPEC GT-M E4 v1.0",
+        "spec_version": "SPEC GT-M E4 v1.1 (CV & P-State Hysteresis Analysis)",
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "baseline_pre_W": p_idle_pre,
         "baseline_post_W": p_idle_post,
         "baseline_drift_ratio": drift,
+        "p_cuda_resident_idle_measured_W": p_cuda_resident_idle_measured,
         "profile_results": profile_results,
         "degradation_factors_vs_saturated": degradation_factors,
         "gates_status": {
-            "G4.1_profiles_reproducible": True,
+            "G4.1_cv_pass_all_profiles": cv_pass_all,
             "G4.2_baseline_drift_pass": drift_pass,
             "G4.3_normalization_enforced": True,
             "G4.4_hardware_neutrality_declared": True,
@@ -315,13 +349,15 @@ def run_experiment_e4(num_runs_per_profile: int = 10) -> Dict[str, Any]:
         json.dump(report, f, indent=2)
 
     print("\n=================================================================")
-    print("               RESULTADOS DO EXPERIMENTO E4 (DUTY CYCLE)         ")
+    print("               RESULTADOS DO EXPERIMENTO E4 (GT-M v1.1)          ")
     print("=================================================================")
     for p_name, res in profile_results.items():
         deg = degradation_factors[p_name]
-        print(f" [*] {p_name} ({res['utilization_pct']}% utilization): {res['e_gross_amortized_per_inf_J']:.4f} J/inf útil (Degradação vs Saturado: {deg:.2f}x)")
+        print(f" [*] {p_name} ({res['utilization_pct']}% utilization): {res['mean_amortized_joules_per_inf']:.4f} J/inf útil (CV: {res['cv_ratio']*100:.2f}%, Degradação vs Saturado: {deg:.2f}x)")
 
-    print(f"\n [*] Status do Gate G4.2 (Deriva de Baseline <= 5%): {drift*100:.2f}% -> {'PASS ✅' if drift_pass else 'FAIL ❌'}")
+    print(f"\n [*] Potência Ociosa CUDA-Residente Medida durante Pausas: {p_cuda_resident_idle_measured:.2f} W (Estado P0/P2 da GPU)")
+    print(f" [*] Status do Gate G4.1 (CV <= 15% em todos perfis): {'PASS ✅' if cv_pass_all else 'FAIL ❌'}")
+    print(f" [*] Status do Gate G4.2 (Deriva de Baseline <= 5%): {drift*100:.2f}% -> {'PASS ✅' if drift_pass else 'FAIL ❌'}")
     print(f" [*] Status do Gate G4.3 (Trava de Normalização por Inferência Útil): ENFORCED ✅")
     print(f" [*] GATE GERAL DO EXPERIMENTO E4: {'APROVADO [PASS]' if overall_pass else 'REPROVADO [FAIL]'}")
     print(f" [*] Artefato gravado em: {artifact_path}\n")
@@ -329,9 +365,10 @@ def run_experiment_e4(num_runs_per_profile: int = 10) -> Dict[str, Any]:
     return report
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Executa o experimento E4 (Energia Ajustada por Ciclo de Trabalho)")
-    parser.add_argument("--runs", type=int, default=10, help="Número de inferências por janela de perfil (padrão: 10)")
+    parser = argparse.ArgumentParser(description="Executa o experimento E4 v1.1 com amostragem de dispersão CV")
+    parser.add_argument("--runs", type=int, default=10, help="Número de repetições por perfil (padrão: 10)")
+    parser.add_argument("--inferences", type=int, default=20, help="Número de inferências por janela (padrão: 20)")
     args = parser.parse_args()
     
     multiprocessing.set_start_method('spawn', force=True)
-    run_experiment_e4(num_runs_per_profile=args.runs)
+    run_experiment_e4(num_runs_per_profile=args.runs, inferences_per_run=args.inferences)
