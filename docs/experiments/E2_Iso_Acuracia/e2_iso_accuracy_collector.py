@@ -250,25 +250,29 @@ def run_experiment_e2(num_runs: int = 30) -> Dict[str, Any]:
         }
         print(f"    -> {mode}: Acurácia = {accuracy_baselines[mode]}%, Energia = {mean_j:.4f} J (CV: {cv_j*100:.2f}%)")
         
-        print(f"    -> Sub-processo morto. Limpeza garantida pelo SO. Cooldown inter-modo (8s)...")
-        time.sleep(8)  # Cooldown entre modos de precisão
+        print(f"    -> Sub-processo morto. Limpeza garantida pelo SO. Cooldown inter-modo para dissipação térmica (25s)...")
+        time.sleep(25)  # Cooldown inter-modo para evitar acúmulo de calor em GPUs de alto TDP
 
     print("[C1] Aguardando resfriamento térmico final (até 5 min) para garantir o P-State Ocioso...")
     consecutive_ok = 0
+    prev_w = 0.0
     for i in range(100):
         time.sleep(3)
         current_w = (nvml.read_mW() / 1000.0) if nvml.available else 0.0
         diff_ratio = abs(current_w - p_idle_pre) / p_idle_pre if p_idle_pre > 0 else 0.0
-        if current_w > 0 and diff_ratio <= 0.025:
+        power_flat = abs(current_w - prev_w) <= 0.2 if prev_w > 0 else False
+        prev_w = current_w
+
+        if current_w > 0 and (diff_ratio <= 0.05 or (i >= 15 and power_flat)):
             consecutive_ok += 1
-            if consecutive_ok >= 2:
+            if consecutive_ok >= 3:
                 print(f"    -> Estabilizado em {current_w:.3f} W após {i*3}s.")
                 break
         else:
             consecutive_ok = 0
 
         if i > 0 and i % 5 == 0:
-            print(f"       ... resfriando, potência atual: {current_w:.3f} W (alvo: < {p_idle_pre * 1.025:.3f} W)")
+            print(f"       ... resfriando, potência atual: {current_w:.3f} W (alvo: < {p_idle_pre * 1.05:.3f} W)")
 
     p_idle_post, _ = measure_baseline(rapl, nvml, duration_s=10)
     drift = abs(p_idle_post - p_idle_pre) / p_idle_pre if p_idle_pre > 0 else 0.0
