@@ -206,7 +206,6 @@ class ContinuousNVMLSampler:
             joules += ((p1 + p2) / 2.0) * dt
         return joules
 
-def run_experiment_e1(num_runs: int = 30) -> Dict[str, Any]:
 def worker_e1_inference(num_runs: int, p_idle_pre: float, queue: multiprocessing.Queue):
     """
     Executa a série de inferências E1 em sub-processo isolado.
