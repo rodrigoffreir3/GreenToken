@@ -250,12 +250,12 @@ def run_experiment_e2(num_runs: int = 30) -> Dict[str, Any]:
         }
         print(f"    -> {mode}: Acurácia = {accuracy_baselines[mode]}%, Energia = {mean_j:.4f} J (CV: {cv_j*100:.2f}%)")
         
-        print(f"    -> Sub-processo morto. Limpeza garantida pelo SO. Aguardando resfriamento (5s)...")
-        time.sleep(5)  # Cooldown entre modos de precisão
+        print(f"    -> Sub-processo morto. Limpeza garantida pelo SO. Cooldown inter-modo (8s)...")
+        time.sleep(8)  # Cooldown entre modos de precisão
 
-    print("[C1] Aguardando resfriamento térmico final (até 3 min) para garantir o P-State Ocioso...")
+    print("[C1] Aguardando resfriamento térmico final (até 5 min) para garantir o P-State Ocioso...")
     consecutive_ok = 0
-    for i in range(60):
+    for i in range(100):
         time.sleep(3)
         current_w = (nvml.read_mW() / 1000.0) if nvml.available else 0.0
         diff_ratio = abs(current_w - p_idle_pre) / p_idle_pre if p_idle_pre > 0 else 0.0
