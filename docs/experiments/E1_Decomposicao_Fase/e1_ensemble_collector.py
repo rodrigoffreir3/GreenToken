@@ -17,6 +17,7 @@ import json
 import argparse
 import math
 import statistics
+import multiprocessing
 from typing import Dict, List, Any, Tuple
 
 # Constantes e Limiares Registrados em preregistration_E1.md
