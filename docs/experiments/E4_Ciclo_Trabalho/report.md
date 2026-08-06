@@ -7,7 +7,7 @@
 **Pré-Registro:** `docs/experiments/E4_Ciclo_Trabalho/preregistration.md`  
 **Código do Coletor:** `docs/experiments/E4_Ciclo_Trabalho/e4_duty_cycle_collector.py`  
 **Hardware de Teste Físico:** NVIDIA Tesla T4 (Ambiente Kaggle Linux / NVML Ativo / Multiprocessing Isolation)  
-**Artefato de Dado Bruto Commitado:** [E4_raw_data.json](file:///c:/Users/rodri/OneDrive/Área%20de%20Trabalho/projetos/GreenToken/docs/experiments/E4_Ciclo_Trabalho/artifacts/E4_raw_data.json)  
+**Artefato de Dado Bruto Commitado:** [E4_raw_data.json](./artifacts/E4_raw_data.json)  
 
 ---
 
@@ -32,7 +32,7 @@
 | **Profile_100pct_Saturada** | 100% Carga (Pico) | `8.7 s` | `589.00 J` | **`29.4499 J / inf útil`** | `1.80%` | **1.00x** (Baseline de Folheto) | **APROVADO ✅** |
 | **Profile_50pct_Alta** | 50% Carga / 50% Idle | `17.9 s` | `956.65 J` | **`47.8324 J / inf útil`** | `1.90%` | **1.62x de degradação** | **APROVADO ✅** |
 | **Profile_20pct_Media** | 20% Carga / 80% Idle | `48.3 s` | `2124.69 J` | **`106.2345 J / inf útil`** | `2.10%` | **3.61x de degradação** | **APROVADO ✅** |
-| **Profile_50pct_Baixa** | 5% Carga / 95% Idle | `200.6 s` | `7117.42 J` | **`355.8711 J / inf útil`** | `2.20%` | **12.08x de degradação** | **APROVADO ✅** |
+| **Profile_5pct_Baixa** | 5% Carga / 95% Idle | `200.6 s` | `7117.42 J` | **`355.8711 J / inf útil`** | `2.20%` | **12.08x de degradação** | **APROVADO ✅** |
 
 ---
 
