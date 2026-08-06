@@ -207,13 +207,65 @@ class ContinuousNVMLSampler:
         return joules
 
 def run_experiment_e1(num_runs: int = 30) -> Dict[str, Any]:
+def worker_e1_inference(num_runs: int, p_idle_pre: float, queue: multiprocessing.Queue):
+    """
+    Executa a série de inferências E1 em sub-processo isolado.
+    Garante que o contexto CUDA do PyTorch seja encerrado pelo SO ao término da execução,
+    permitindo que a GPU retorne ao P-State Ocioso (P8) para a medição do baseline pós-coleta.
+    """
+    try:
+        rapl = RAPLSensor()
+        nvml = NVMLSensor()
+        engine = MockEngineBenchmark()
+
+        # 2. Aquecimento Térmico (Controle C2 - Estabilização do Silício)
+        t_warm = time.time()
+        while time.time() - t_warm < 30:
+            engine.run_inference(-1)
+
+        runs_data = []
+
+        for i in range(num_runs):
+            t0_rapl = rapl.read_uj()
+            t0_time = time.time()
+            
+            gpu_sampler = ContinuousNVMLSampler(nvml) if nvml.available else None
+            if gpu_sampler:
+                gpu_sampler.start()
+
+            info = engine.run_inference(i + 1)
+            joules_gpu = gpu_sampler.stop_and_integrate() if gpu_sampler else 0.0
+
+            t1_time = time.time()
+            t1_rapl = rapl.read_uj()
+
+            dt = t1_time - t0_time
+            joules_cpu = (t1_rapl - t0_rapl) / 1e6 if rapl.available and dt > 0 else 0.0
+
+            if not rapl.available and not nvml.available:
+                raise RuntimeError(
+                    "ERRO METODOLÓGICO: Nenhum sensor de energia físico (RAPL ou NVML) disponível no sistema."
+                )
+
+            total_joules = joules_cpu + joules_gpu
+            info["total_joules_gross"] = total_joules
+            info["delta_joules_net"] = max(0.0, total_joules - (p_idle_pre * dt))
+            runs_data.append(info)
+
+            if (i + 1) % 5 == 0 or (i + 1) == num_runs:
+                print(f"    - Repetição {i+1}/{num_runs} concluída: {info['duration_s']*1000:.1f} ms, {total_joules:.3f} J")
+
+        queue.put({"status": "ok", "runs_data": runs_data})
+    except Exception as e:
+        queue.put({"status": "error", "error": str(e)})
+
+def run_experiment_e1(num_runs: int = 30) -> Dict[str, Any]:
     print("=================================================================")
     print("      INICIANDO EXPERIMENTO E1 (GT-M): RECONSTRUÇÃO POR ENSEMBLE  ")
     print("=================================================================")
 
     rapl = RAPLSensor()
     nvml = NVMLSensor()
-    engine = MockEngineBenchmark()
 
     print(f"[*] Status dos Sensores: RAPL={rapl.available}, NVML={nvml.available}")
 
@@ -221,50 +273,25 @@ def run_experiment_e1(num_runs: int = 30) -> Dict[str, Any]:
     p_idle_pre, p_idle_pre_std = measure_baseline(rapl, nvml, duration_s=10)
     print(f"[C1] Baseline Pré-Coleta: {p_idle_pre:.3f} W ± {p_idle_pre_std:.3f} W")
 
-    # 2. Aquecimento Térmico (Controle C2 - Estabilização do Silício)
-    print("[C2] Executando aquecimento térmico prévio por 30s para estabilização de temperatura...")
-    t_warm = time.time()
-    while time.time() - t_warm < 30:
-        engine.run_inference(-1)
+    # 2 & 3. Execução em Sub-processo Isolado (Multiprocessing CUDA Context Isolation)
+    print(f"[C2/C3] Executando aquecimento e série de {num_runs} inferências em processo isolado...")
+    queue = multiprocessing.Queue()
+    p = multiprocessing.Process(
+        target=worker_e1_inference,
+        args=(num_runs, p_idle_pre, queue)
+    )
+    p.start()
+    p.join()
 
-    # 3. Série de N Execuções (C3)
-    print(f"[*] Executando série de {num_runs} inferências idênticas (C3)...")
-    runs_data = []
+    if not queue.empty():
+        res = queue.get()
+        if res["status"] != "ok":
+            raise RuntimeError(f"Erro no sub-processo E1: {res['error']}")
+        runs_data = res["runs_data"]
+    else:
+        raise RuntimeError("Sub-processo E1 encerrou sem retornar dados.")
 
-    for i in range(num_runs):
-        t0_rapl = rapl.read_uj()
-        t0_time = time.time()
-        
-        gpu_sampler = ContinuousNVMLSampler(nvml) if nvml.available else None
-        if gpu_sampler:
-            gpu_sampler.start()
-
-        info = engine.run_inference(i + 1)
-        
-        joules_gpu = gpu_sampler.stop_and_integrate() if gpu_sampler else 0.0
-
-        t1_time = time.time()
-        t1_rapl = rapl.read_uj()
-
-        dt = t1_time - t0_time
-        joules_cpu = 0.0
-
-        if rapl.available and dt > 0:
-            joules_cpu = (t1_rapl - t0_rapl) / 1e6
-
-        if not rapl.available and not nvml.available:
-            raise RuntimeError(
-                "ERRO METODOLÓGICO: Nenhum sensor de energia físico (RAPL ou NVML) disponível no sistema. "
-                "Para garantir o rigor científico (Seção 0 da SPEC GT-M), o teste não pode utilizar fallbacks sintéticos."
-            )
-
-        total_joules = joules_cpu + joules_gpu
-        info["total_joules_gross"] = total_joules
-        info["delta_joules_net"] = max(0.0, total_joules - (p_idle_pre * dt))
-        runs_data.append(info)
-
-        if (i + 1) % 5 == 0 or (i + 1) == num_runs:
-            print(f"    - Repetição {i+1}/{num_runs} concluída: {info['duration_s']*1000:.1f} ms, {total_joules:.3f} J")
+    print("    -> Contexto CUDA encerrado e liberado pelo SO.")
 
     # 4. Estabilização pós-carga e Baseline Pós-Coleta (C1)
     print("\n[C1] Aguardando resfriamento térmico final (até 5 min) para garantir o retorno ao P-State Ocioso...")
@@ -365,4 +392,5 @@ if __name__ == "__main__":
     parser.add_argument("--runs", type=int, default=30, help="Número de repetições (padrão: 30)")
     args = parser.parse_args()
     
+    multiprocessing.set_start_method('spawn', force=True)
     run_experiment_e1(num_runs=args.runs)
