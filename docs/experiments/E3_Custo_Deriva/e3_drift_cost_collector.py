@@ -349,12 +349,12 @@ def run_experiment_e3(num_runs: int = 30) -> Dict[str, Any]:
         
         status_str = "FAIL ❌ (Falha de Instrumentação)" if is_failure else ("PASS ✅" if cv_pass else "FAIL ❌")
         print(f"    -> {c_name}: {mean_j:.4f} J (CV: {cv_j*100:.2f}%, Amostras/run: {mean_samples:.1f}, Loops: {res['required_loops']}) -> {status_str}")
-        print(f"    -> Contexto CUDA limpo pelo SO. Cooldown inter-condição (5s)...")
-        time.sleep(5)
+        print(f"    -> Contexto CUDA limpo pelo SO. Cooldown inter-condição (8s)...")
+        time.sleep(8)
 
-    print("\n[C1] Aguardando resfriamento térmico final (até 3 min) para garantir o P-State Ocioso...")
+    print("\n[C1] Aguardando resfriamento térmico final (até 5 min) para garantir o P-State Ocioso...")
     consecutive_ok = 0
-    for i in range(60):
+    for i in range(100):
         time.sleep(3)
         current_w = (nvml.read_mW() / 1000.0) if nvml.available else 0.0
         diff_ratio = abs(current_w - p_idle_pre) / p_idle_pre if p_idle_pre > 0 else 0.0
