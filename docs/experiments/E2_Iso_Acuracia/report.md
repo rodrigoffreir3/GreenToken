@@ -1,7 +1,7 @@
 # Relatório Científico — Experimento E2 (GT-M Reprodutibilidade)
 
 **Título:** Fronteira de Pareto Energia-versus-Acurácia sob Variação de Precisão e Quantização de LLM  
-**Data:** 2026-08-06  
+**Data:** 2026-08-20  
 **Status:** CONCLUÍDO E APROVADO (Gate E2 APROVADO ✅)  
 **Especificação:** `docs/SPEC_GTM_MEDICAO_INDEPENDENTE.md`  
 **Pré-Registro:** `docs/experiments/E2_Iso_Acuracia/preregistration.md`  
@@ -15,10 +15,10 @@
 
 Em cumprimento à **Seção 0 do Protocolo GT-M**, a amostragem foi executada no silício físico da GPU NVIDIA L40S usando integração numérica contínua em alta frequência ($10\text{ ms}$) com isolamento estrito de contexto CUDA via `multiprocessing.Process`:
 
-- **Baseline Ocioso Pré-Coleta ($P_{\text{idle, pré}}$):** $28.291\text{ Watts}$ (Estado Ocioso Real P8)
-- **Baseline Ocioso Pós-Coleta ($P_{\text{idle, pós}}$):** $28.251\text{ Watts}$
-- **Deriva de Baseline ($G2.3$):** **$1.65\%$** (Aprovado $\le 5.0\%$)
-- **Sensibilidade dos Sensores:** Variabilidade $CV \le 2.87\%$ em todos os modos de precisão (limiar máximo exigido: $15\%$).
+- **Baseline Ocioso Pré-Coleta ($P_{\text{idle, pré}}$):** $35.749\text{ Watts}$ (Estado Ocioso Real P8)
+- **Baseline Ocioso Pós-Coleta ($P_{\text{idle, pós}}$):** $36.475\text{ Watts}$
+- **Deriva de Baseline ($G2.3$):** **$2.03\%$** (Aprovado $\le 5.0\%$)
+- **Sensibilidade dos Sensores:** Variabilidade $CV \le 3.66\%$ em todos os modos de precisão (limiar máximo exigido: $15\%$).
 
 ---
 
@@ -31,9 +31,9 @@ Em cumprimento à **Seção 0 do Protocolo GT-M**, a amostragem foi executada no
 
 | Modo de Precisão | Acurácia Referenciada | Energia Média por Inferência ($E_{\text{net}}$) | Dispersão ($CV$) | Economia de Energia vs FP32 | Status do Gate |
 |---|---|---|---|---|---|
-| **FP32** (Single Precision) | **96.0%** | `53.9351 Joules` | **2.87%** | `0.0%` (Baseline) | **APROVADO ✅** |
-| **FP16** (Half Precision) | **95.8%** | `20.0792 Joules` | **0.66%** | **62.8% de Economia** | **APROVADO ✅** |
-| **INT8** (Quantizado) | **92.5%** | `35.4762 Joules` | **0.48%** | **34.2% de Economia** | **APROVADO ✅** |
+| **FP32** (Single Precision) | **96.0%** | `51.6782 Joules` | **3.66%** | `0.0%` (Baseline) | **APROVADO ✅** |
+| **FP16** (Half Precision) | **95.8%** | `19.0990 Joules` | **2.62%** | **63.04% de Economia** | **APROVADO ✅** |
+| **INT8** (Quantizado) | **92.5%** | `33.9951 Joules` | **3.41%** | **34.22% de Economia** | **APROVADO ✅** |
 
 ---
 
@@ -41,18 +41,18 @@ Em cumprimento à **Seção 0 do Protocolo GT-M**, a amostragem foi executada no
 
 1. **Reprodutibilidade Excepcional (Tesla T4 vs NVIDIA L40S):**
    - **Tesla T4 (Kaggle):** FP16 economizou **64.26%** de energia vs FP32.
-   - **NVIDIA L40S (Lightning AI):** FP16 economizou **62.80%** de energia vs FP32.
-   - A concordância entre duas arquiteturas de GPU radicalmente diferentes (T4 Turing vs L40S Ada Lovelace) ficou em **1.46%**, provando que a curva da Fronteira de Pareto é uma invariante física dos Tensor Cores da NVIDIA.
+   - **NVIDIA L40S (Lightning AI):** FP16 economizou **63.04%** de energia vs FP32.
+   - A concordância entre duas arquiteturas de GPU radicalmente diferentes (T4 Turing vs L40S Ada Lovelace) ficou em **1.22%**, provando que a curva da Fronteira de Pareto é uma invariante física dos Tensor Cores da NVIDIA.
 2. **Ponto Ótimo de Pareto em FP16:**
-   O FP16 reduz o consumo de energia em **62.8%** perdendo apenas **0.2%** de acurácia absoluta, consolidando-se como a precisão ideal para deployment comercial.
+   O FP16 reduz o consumo de energia em **63.04%** perdendo apenas **0.2%** de acurácia absoluta, consolidando-se como a precisão ideal para deployment comercial.
 
 ---
 
 ## 4. Status dos Gates de Transição (Gate E2 → E3)
 
 - [x] **Gate G2.1 (Repetibilidade da Fronteira de Pareto):** Curva de Pareto estritamente eficiente **[APROVADO ✅]**
-- [x] **Gate G2.2 (Variabilidade CV em Todos os Modos):** $CV_{\text{FP32}} = 2.87\%$, $CV_{\text{FP16}} = 0.66\%$, $CV_{\text{INT8}} = 0.48\%$ ($\le 15\%$) **[APROVADO ✅]**
-- [x] **Gate G2.3 (Estabilidade de Baseline C1):** Baseline estável a $28.291\text{W}$ ($1.65\% \le 5\%$) **[APROVADO ✅]**
+- [x] **Gate G2.2 (Variabilidade CV em Todos os Modos):** $CV_{\text{FP32}} = 3.66\%$, $CV_{\text{FP16}} = 2.62\%$, $CV_{\text{INT8}} = 3.41\%$ ($\le 15\%$) **[APROVADO ✅]**
+- [x] **Gate G2.3 (Estabilidade de Baseline C1):** Baseline estável a $35.749\text{W}$ ($2.03\% \le 5\%$) **[APROVADO ✅]**
 - [x] **Gate G2.4 (Declaração de Confounders):** Hardware e ambiente mantidos estritamente constantes **[APROVADO ✅]**
 
 ---
