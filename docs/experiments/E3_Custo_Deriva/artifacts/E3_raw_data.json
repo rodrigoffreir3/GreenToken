@@ -1,0 +1,119 @@
+{
+  "experiment": "E3_Custo_Deriva_E_Sensibilidade_Prompt",
+  "spec_version": "SPEC GTM-E3-FIX v1.2 (Normalized)",
+  "timestamp_utc": "2026-08-20T17:33:56Z",
+  "num_runs_per_condition": 30,
+  "baseline_pre_W": 35.41974,
+  "baseline_post_W": 35.99894,
+  "baseline_drift_ratio": 0.016352463343886778,
+  "length_sweep_results": {
+    "Length_128t_TempFixed0.7": {
+      "seq_len": 128,
+      "temperature": 0.7,
+      "required_loops": 12197,
+      "mean_net_joules_block": 56.18504165380017,
+      "joules_per_pass": 0.00460646402015251,
+      "stdev_net_joules_block": 0.3636786765949727,
+      "cv_ratio": 0.006472873666907296,
+      "valid_runs": 30,
+      "invalid_samples": 0,
+      "invalid_ratio": 0.0,
+      "mean_samples_per_run": 40,
+      "instrumentation_failure": false,
+      "cv_pass": true
+    },
+    "Length_512t_TempFixed0.7": {
+      "seq_len": 512,
+      "temperature": 0.7,
+      "required_loops": 8585,
+      "mean_net_joules_block": 103.46176420088354,
+      "joules_per_pass": 0.012051457682106411,
+      "stdev_net_joules_block": 0.9577712826907491,
+      "cv_ratio": 0.009257248705242646,
+      "valid_runs": 30,
+      "invalid_samples": 0,
+      "invalid_ratio": 0.0,
+      "mean_samples_per_run": 40,
+      "instrumentation_failure": false,
+      "cv_pass": true
+    },
+    "Length_1024t_TempFixed0.7": {
+      "seq_len": 1024,
+      "temperature": 0.7,
+      "required_loops": 5729,
+      "mean_net_joules_block": 105.43086106279277,
+      "joules_per_pass": 0.018403012927699906,
+      "stdev_net_joules_block": 1.1909258403752403,
+      "cv_ratio": 0.011295799241039545,
+      "valid_runs": 30,
+      "invalid_samples": 0,
+      "invalid_ratio": 0.0,
+      "mean_samples_per_run": 41.2,
+      "instrumentation_failure": false,
+      "cv_pass": true
+    }
+  },
+  "temperature_sweep_results": {
+    "Temp_0.0_LengthFixed512t": {
+      "seq_len": 512,
+      "temperature": 0.0,
+      "required_loops": 17114,
+      "mean_net_joules_block": 133.2897322489163,
+      "joules_per_pass": 0.007788344761535369,
+      "stdev_net_joules_block": 1.5843082396273798,
+      "cv_ratio": 0.011886198680845958,
+      "valid_runs": 30,
+      "invalid_samples": 0,
+      "invalid_ratio": 0.0,
+      "mean_samples_per_run": 46.7,
+      "instrumentation_failure": false,
+      "cv_pass": true
+    },
+    "Temp_0.7_LengthFixed512t": {
+      "seq_len": 512,
+      "temperature": 0.7,
+      "required_loops": 8657,
+      "mean_net_joules_block": 106.62672519001484,
+      "joules_per_pass": 0.012316821669171172,
+      "stdev_net_joules_block": 0.7698184918170855,
+      "cv_ratio": 0.007219751806549676,
+      "valid_runs": 30,
+      "invalid_samples": 0,
+      "invalid_ratio": 0.0,
+      "mean_samples_per_run": 40,
+      "instrumentation_failure": false,
+      "cv_pass": true
+    },
+    "Temp_1.0_LengthFixed512t": {
+      "seq_len": 512,
+      "temperature": 1.0,
+      "required_loops": 8123,
+      "mean_net_joules_block": 105.31643473833688,
+      "joules_per_pass": 0.012965214174361306,
+      "stdev_net_joules_block": 1.1938577792274092,
+      "cv_ratio": 0.01133591145763336,
+      "valid_runs": 30,
+      "invalid_samples": 0,
+      "invalid_ratio": 0.0,
+      "mean_samples_per_run": 40,
+      "instrumentation_failure": false,
+      "cv_pass": true
+    }
+  },
+  "simulation_drift_cost": {
+    "drift_parameter_nu": 0.02,
+    "lifetime_inferences": 100000,
+    "recalibrations_needed": 10,
+    "recalibration_cost_per_event_J": 0.6025728841053205,
+    "total_recalibration_energy_J": 6.025728841053205,
+    "e_base_inference_pass_J": 0.012051457682106411,
+    "e_amortized_inference_pass_J": 0.012111714970516944,
+    "amortized_overhead_pct": 0.5000000000000048
+  },
+  "gates_status": {
+    "G3.1_cv_pass_all_conditions": true,
+    "G3.2_baseline_drift_pass": true,
+    "G3.3_hybrid_nature_declared": true,
+    "overall_E3_gate_passed": true
+  }
+}

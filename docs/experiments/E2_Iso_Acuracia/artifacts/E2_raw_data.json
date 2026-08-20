@@ -1,0 +1,57 @@
+{
+  "experiment": "E2_Energia_Iso_Acuracia",
+  "timestamp_utc": "2026-08-20T17:28:42Z",
+  "num_runs_per_mode": 30,
+  "baseline_pre_W": 35.748599999999996,
+  "baseline_post_W": 36.47532,
+  "baseline_drift_ratio": 0.02032862825397379,
+  "results_per_mode": {
+    "FP32": {
+      "accuracy_percentage": 96.0,
+      "mean_net_joules": 51.67815758453449,
+      "stdev_net_joules": 1.8902053369452436,
+      "cv_ratio": 0.03657648463673011,
+      "cv_pass": true
+    },
+    "FP16": {
+      "accuracy_percentage": 95.8,
+      "mean_net_joules": 19.099023909985224,
+      "stdev_net_joules": 0.5006438319162356,
+      "cv_ratio": 0.026213058545598886,
+      "cv_pass": true
+    },
+    "INT8": {
+      "accuracy_percentage": 92.5,
+      "mean_net_joules": 33.99512050708373,
+      "stdev_net_joules": 1.1582031465589422,
+      "cv_ratio": 0.03406968792234761,
+      "cv_pass": true
+    }
+  },
+  "pareto_frontier": [
+    {
+      "mode": "FP32",
+      "accuracy": 96.0,
+      "joules_per_inference": 51.67815758453449,
+      "energy_saving_vs_fp32_pct": 0.0
+    },
+    {
+      "mode": "FP16",
+      "accuracy": 95.8,
+      "joules_per_inference": 19.099023909985224,
+      "energy_saving_vs_fp32_pct": 63.042366828300175
+    },
+    {
+      "mode": "INT8",
+      "accuracy": 92.5,
+      "joules_per_inference": 33.99512050708373,
+      "energy_saving_vs_fp32_pct": 34.21762288743568
+    }
+  ],
+  "gates_status": {
+    "G2.1_pareto_reproducible": true,
+    "G2.2_cv_pass_all_modes": true,
+    "G2.3_baseline_drift_pass": true,
+    "overall_E2_gate_passed": true
+  }
+}
