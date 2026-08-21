@@ -1,10 +1,21 @@
 # GreenToken
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22036311.svg)](https://doi.org/10.5281/zenodo.22036311)
+
 **O medidor de energia que revela quanto cada token da sua IA realmente custa em Watts, Joules e dólares.**
 
 > 🌐 **Página oficial e documentação completa:** [rodrigofreire.pages.dev/greentoken](https://rodrigofreire.pages.dev/greentoken)
 
 **O GreenToken é um projeto de observabilidade de energia e FinOps de IA em constante evolução. Fique à vontade para contribuir e deixar sugestões ou comentários construtivos na página oficial do projeto. Grato pelo apoio!**
+
+---
+
+## 🔬 Research & Metodologia (GT-M)
+
+A metodologia de medição energética independente (GT-M) está publicada com dados brutos e código de coleta reprodutível — decomposição por fase (E1), fronteira de Pareto acurácia-energia (E2) e energia amortizada por ciclo de trabalho (E4), com apêndice sobre deriva simulada (E3):
+
+> Freire, R. (2026). *GT-M — Medição Energética Independente para Inferência de IA: Decomposição por Fase, Fronteira de Pareto Acurácia-Energia e Energia Amortizada por Ciclo de Trabalho (com apêndice sobre deriva simulada)*. Zenodo.  
+> https://doi.org/10.5281/zenodo.22036311
 
 ---
 
